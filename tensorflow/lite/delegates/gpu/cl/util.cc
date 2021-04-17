@@ -184,8 +184,9 @@ absl::Status CreateCLBuffer(cl_context context, int size_in_bytes,
   return absl::OkStatus();
 }
 
-absl::Status CreateFloatRGBAImage2D(cl_context context, int width, int height,
-                                    DataType type, void* data, cl_mem* result) {
+absl::Status CreateRGBAImage2D(cl_context context, int width, int height,
+                               cl_channel_type channel_type, void* data,
+                               cl_mem* result) {
   cl_image_desc desc;
   desc.image_type = CL_MEM_OBJECT_IMAGE2D;
   desc.image_width = width;
@@ -199,8 +200,7 @@ absl::Status CreateFloatRGBAImage2D(cl_context context, int width, int height,
 
   cl_image_format format;
   format.image_channel_order = CL_RGBA;
-  format.image_channel_data_type =
-      type == DataType::FLOAT32 ? CL_FLOAT : CL_HALF_FLOAT;
+  format.image_channel_data_type = channel_type;
 
   cl_mem_flags flags = CL_MEM_READ_WRITE;
   if (data) {

@@ -29,6 +29,7 @@ limitations under the License.
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/device_attributes.pb.h"
+#include "tensorflow/core/framework/device_factory.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/kernel_def.pb.h"
 #include "tensorflow/core/framework/kernel_def_util.h"
@@ -114,10 +115,11 @@ OpKernel::OpKernel(OpKernelConstruction* context, bool is_deferred)
   OP_REQUIRES_OK(context, CheckOpDeprecation(*props_->op_def,
                                              context->graph_def_version()));
 
-  // Kernels executing on GPU/SYCL tie very few resources on the CPU where the
+  // Kernels executing on GPU tie very few resources on the CPU where the
   // scheduler runs: we consider them as inexpensive.
   expensive_ = context->device_type() != DeviceType(DEVICE_GPU) &&
-               context->device_type() != DeviceType(DEVICE_SYCL);
+               !DeviceFactory::IsPluggableDevice(
+                   DeviceTypeString(context->device_type()));
 }
 
 OpKernel::OpKernel(OpKernelConstruction* context, NodeDef&& custom_def,
@@ -141,10 +143,11 @@ OpKernel::OpKernel(OpKernelConstruction* context, NodeDef&& custom_def,
   OP_REQUIRES_OK(context, CheckOpDeprecation(*props_->op_def,
                                              context->graph_def_version()));
 
-  // Kernels executing on GPU/SYCL tie very few resources on the CPU where the
+  // Kernels executing on GPU tie very few resources on the CPU where the
   // scheduler runs: we consider them as inexpensive.
   expensive_ = context->device_type() != DeviceType(DEVICE_GPU) &&
-               context->device_type() != DeviceType(DEVICE_SYCL);
+               !DeviceFactory::IsPluggableDevice(
+                   DeviceTypeString(context->device_type()));
 }
 
 OpKernel::~OpKernel() {}
@@ -1258,26 +1261,23 @@ namespace kernel_factory {
 void OpKernelRegistrar::InitInternal(const KernelDef* kernel_def,
                                      StringPiece kernel_class_name,
                                      std::unique_ptr<OpKernelFactory> factory) {
-  // See comments in register_kernel::Name in header for info on _no_register.
-  if (kernel_def->op() != "_no_register") {
-    const string key =
-        Key(kernel_def->op(), DeviceType(kernel_def->device_type()),
-            kernel_def->label());
+  const string key =
+      Key(kernel_def->op(), DeviceType(kernel_def->device_type()),
+          kernel_def->label());
 
-    // To avoid calling LoadDynamicKernels DO NOT CALL GlobalKernelRegistryTyped
-    // here.
-    // InitInternal gets called by static initializers, so it ends up executing
-    // before main. This causes LoadKernelLibraries function to get called
-    // before some file libraries can initialize, which in turn crashes the
-    // program flakily. Until we get rid of static initializers in kernel
-    // registration mechanism, we have this workaround here.
-    auto global_registry =
-        reinterpret_cast<KernelRegistry*>(GlobalKernelRegistry());
-    mutex_lock l(global_registry->mu);
-    global_registry->registry.emplace(
-        key,
-        KernelRegistration(*kernel_def, kernel_class_name, std::move(factory)));
-  }
+  // To avoid calling LoadDynamicKernels DO NOT CALL GlobalKernelRegistryTyped
+  // here.
+  // InitInternal gets called by static initializers, so it ends up executing
+  // before main. This causes LoadKernelLibraries function to get called
+  // before some file libraries can initialize, which in turn crashes the
+  // program flakily. Until we get rid of static initializers in kernel
+  // registration mechanism, we have this workaround here.
+  auto global_registry =
+      reinterpret_cast<KernelRegistry*>(GlobalKernelRegistry());
+  mutex_lock l(global_registry->mu);
+  global_registry->registry.emplace(
+      key,
+      KernelRegistration(*kernel_def, kernel_class_name, std::move(factory)));
   delete kernel_def;
 }
 
@@ -1721,13 +1721,6 @@ template <>
 const Eigen::GpuDevice& OpKernelContext::eigen_device() const {
   return eigen_gpu_device();
 }
-
-#ifdef TENSORFLOW_USE_SYCL
-template <>
-const Eigen::SyclDevice& OpKernelContext::eigen_device() const {
-  return eigen_sycl_device();
-}
-#endif
 
 void OpKernelConstruction::CtxFailure(const Status& s) {
   VLOG(1) << s;

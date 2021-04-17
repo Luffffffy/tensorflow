@@ -19,12 +19,11 @@ limitations under the License.
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 using mlir::FunctionPass;
-using mlir::PassRegistration;
 using mlir::PassWrapper;
 
 namespace {
@@ -40,10 +39,10 @@ class OptimizeMhloPass : public PassWrapper<OptimizeMhloPass, FunctionPass> {
 // Lowers the complex operations that can be represented using other operations.
 void OptimizeMhloPass::runOnFunction() {
   // Add lowering patterns to the list.
-  mlir::OwningRewritePatternList patterns;
+  mlir::OwningRewritePatternList patterns(&getContext());
   mlir::mhlo::PopulateOptimizeMHLOPatterns(&getContext(), &patterns);
 
-  applyPatternsAndFoldGreedily(getFunction(), patterns);
+  (void)applyPatternsAndFoldGreedily(getFunction(), std::move(patterns));
 }
 
 std::unique_ptr<mlir::FunctionPass> mlir::mhlo::createOptimizeMhloPass() {

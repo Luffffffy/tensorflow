@@ -61,7 +61,7 @@ Status NcclBase::InitializeCollectiveParams(CollectiveParams* col_params) {
 Status NcclBase::InitializeCollectiveContext(
     std::shared_ptr<CollectiveContext> col_ctx) {
   col_ctx_ = col_ctx;
-  col_params_ = &col_ctx->col_params;
+  col_params_ = col_ctx->col_params;
   return collective_util::InitializeDeviceAndLocality(
       col_ctx->dev_mgr, col_ctx->device_name, &col_ctx->device,
       &col_ctx->device_locality);
@@ -72,10 +72,6 @@ Status NcclBase::InitializeCollectiveGroupRuntimeDetails(
   col_group_runtime_details->communicator_key =
       NcclManager::instance()->GenerateCommunicatorKey();
   return Status::OK();
-}
-
-const string NcclBase::NcclCollectiveKey(const string& exec_key, int step_id) {
-  return strings::StrCat(exec_key, ":", step_id);
 }
 
 }  // namespace tensorflow

@@ -20,11 +20,10 @@ REGISTER4(UnaryOp, CPU, "IsFinite", functor::isfinite, float, Eigen::half,
           bfloat16, double);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 REGISTER3(UnaryOp, GPU, "IsFinite", functor::isfinite, float, Eigen::half,
           double);
 #endif
+#endif
 
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER2(UnaryOp, SYCL, "IsFinite", functor::isfinite, float, double);
-#endif  // TENSORFLOW_USE_SYCL
 }  // namespace tensorflow

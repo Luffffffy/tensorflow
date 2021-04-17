@@ -15,12 +15,14 @@ limitations under the License.
 
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/IR/Dialect.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 namespace mhlo {
@@ -29,10 +31,13 @@ namespace {
 
 struct TestUnfuseBatchNormPass
     : public PassWrapper<TestUnfuseBatchNormPass, OperationPass<>> {
+  void getDependentDialects(DialectRegistry& registry) const override {
+    registry.insert<memref::MemRefDialect>();
+  }
   void runOnOperation() override {
-    OwningRewritePatternList patterns;
+    OwningRewritePatternList patterns(&getContext());
     PopulateUnfuseBatchNormPatterns(&getContext(), &patterns);
-    applyPatternsAndFoldGreedily(getOperation(), patterns);
+    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
   }
 };
 

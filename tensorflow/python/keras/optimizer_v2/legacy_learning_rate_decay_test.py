@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
 """Functional test for learning rate decay."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import math
 
@@ -26,7 +22,7 @@ from tensorflow.python.keras import combinations
 from tensorflow.python.keras import keras_parameterized
 from tensorflow.python.keras.optimizer_v2 import legacy_learning_rate_decay as learning_rate_decay
 from tensorflow.python.ops import variables
-from tensorflow.python.platform import googletest
+from tensorflow.python.platform import test
 
 
 @combinations.generate(combinations.combine(mode=["graph", "eager"]))
@@ -478,4 +474,4 @@ class NoisyLinearCosineDecayTest(keras_parameterized.TestCase):
 
 
 if __name__ == "__main__":
-  googletest.main()
+  test.main()

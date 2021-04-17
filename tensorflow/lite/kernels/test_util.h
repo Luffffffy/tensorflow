@@ -105,6 +105,7 @@ inline std::vector<float> Dequantize(const std::vector<T>& data, float scale,
 // the actual data is known. This mimics what happens in practice: quantization
 // parameters are calculated during training or post training..
 struct TensorData {
+  // NOLINTNEXTLINE
   TensorData(TensorType type = TensorType_FLOAT32, std::vector<int> shape = {},
              float min = 0.0f, float max = 0.0f, float scale = 0.0f,
              int32_t zero_point = 0, bool per_channel_quantization = false,
@@ -188,10 +189,8 @@ class SingleOpModel {
   SingleOpModel& operator=(const SingleOpModel&) = delete;
 
   // Add a TensorType input tensor and return its index.
-  int AddInput(TensorType type, bool is_variable = false) {
-    return AddInput(TensorData{type}, is_variable);
-  }
-  int AddInput(const TensorData& t, bool is_variable = false);
+  int AddInput(const TensorData& t);
+  int AddVariableInput(const TensorData& t);
 
   int AddIntermediate(TensorType type, const std::vector<float>& scale,
                       const std::vector<int64_t>& zero_point);
@@ -226,8 +225,8 @@ class SingleOpModel {
         t.shape, t.traversal_order, t.format, t.block_size, t.block_map);
     converter.DenseToSparse(dense_data.data());
 
-    const auto dim_metadata = converter.GetDimMetadata();
-    const auto sparse_data = converter.GetData();
+    const auto& dim_metadata = converter.GetDimMetadata();
+    const auto& sparse_data = converter.GetData();
 
     // Build sparsity parameter.
     std::vector<flatbuffers::Offset<DimensionMetadata>> fb_dim_metadata(
@@ -378,7 +377,6 @@ class SingleOpModel {
   int AddNullInput();
 
   // Add a TensorType output tensor and return its index.
-  int AddOutput(TensorType type) { return AddOutput(TensorData{type}); }
   int AddOutput(const TensorData& t);
 
   template <typename T>
@@ -487,6 +485,10 @@ class SingleOpModel {
 
   // Build the interpreter for this model. Also, resize and allocate all
   // tensors given the shapes of the inputs.
+  // Note: 'apply_delegate' also serves to tell whether default TfLite delegates
+  // should be applied implicitly for a test case. For example, when testing the
+  // specific implementation of a TfLite delegate, it might be necessary to set
+  // this to false.
   void BuildInterpreter(std::vector<std::vector<int>> input_shapes,
                         int num_threads, bool allow_fp32_relax_to_fp16,
                         bool apply_delegate, bool allocate_and_delegate = true);
@@ -913,6 +915,7 @@ TensorType GetTensorType() {
   if (std::is_same<T, int8_t>::value) return TensorType_INT8;
   if (std::is_same<T, int16_t>::value) return TensorType_INT16;
   if (std::is_same<T, int32_t>::value) return TensorType_INT32;
+  if (std::is_same<T, uint32_t>::value) return TensorType_UINT32;
   if (std::is_same<T, int64_t>::value) return TensorType_INT64;
   if (std::is_same<T, uint8_t>::value) return TensorType_UINT8;
   if (std::is_same<T, string>::value) return TensorType_STRING;
@@ -936,7 +939,9 @@ struct TypeUnion;
 template <>
 struct TypeUnion<float> {
  public:
+  // NOLINTNEXTLINE
   static constexpr TensorType tensor_type = TensorType::TensorType_FLOAT32;
+  // NOLINTNEXTLINE
   static constexpr TfLiteType tflite_type = TfLiteType::kTfLiteFloat32;
   typedef float ScalarType;
 };
@@ -944,15 +949,29 @@ struct TypeUnion<float> {
 template <>
 struct TypeUnion<int32_t> {
  public:
+  // NOLINTNEXTLINE
   static constexpr TensorType tensor_type = TensorType::TensorType_INT32;
+  // NOLINTNEXTLINE
   static constexpr TfLiteType tflite_type = TfLiteType::kTfLiteInt32;
   typedef int32_t ScalarType;
 };
 
 template <>
+struct TypeUnion<uint32_t> {
+ public:
+  // NOLINTNEXTLINE
+  static constexpr TensorType tensor_type = TensorType::TensorType_UINT32;
+  // NOLINTNEXTLINE
+  static constexpr TfLiteType tflite_type = TfLiteType::kTfLiteUInt32;
+  typedef uint32_t ScalarType;
+};
+
+template <>
 struct TypeUnion<int16_t> {
  public:
+  // NOLINTNEXTLINE
   static constexpr TensorType tensor_type = TensorType::TensorType_INT16;
+  // NOLINTNEXTLINE
   static constexpr TfLiteType tflite_type = TfLiteType::kTfLiteInt16;
   typedef int16_t ScalarType;
 };
@@ -960,7 +979,9 @@ struct TypeUnion<int16_t> {
 template <>
 struct TypeUnion<int8_t> {
  public:
+  // NOLINTNEXTLINE
   static constexpr TensorType tensor_type = TensorType::TensorType_INT8;
+  // NOLINTNEXTLINE
   static constexpr TfLiteType tflite_type = TfLiteType::kTfLiteInt8;
   typedef int8_t ScalarType;
 };
@@ -968,7 +989,9 @@ struct TypeUnion<int8_t> {
 template <>
 struct TypeUnion<uint8_t> {
  public:
+  // NOLINTNEXTLINE
   static constexpr TensorType tensor_type = TensorType::TensorType_UINT8;
+  // NOLINTNEXTLINE
   static constexpr TfLiteType tflite_type = TfLiteType::kTfLiteUInt8;
   typedef uint8_t ScalarType;
 };

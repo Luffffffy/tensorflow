@@ -26,6 +26,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/time/clock.h"
 #include "tensorflow/core/kernels/batching_util/batch_scheduler.h"
 #include "tensorflow/core/kernels/batching_util/periodic_function.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -594,6 +595,10 @@ Queue<TaskType>::Queue(
       env_(env),
       process_batch_callback_(process_batch_callback),
       schedulable_batch_callback_(schedulable_batch_callback) {
+  // Set the higher 32 bits of traceme_context_id_counter_ to be the creation
+  // time of the queue. This prevents the batches in different queues to have
+  // the same traceme_context_id_counter_.
+  traceme_context_id_counter_ = absl::GetCurrentTimeNanos() << 32;
   // Create an initial, open batch.
   batches_.emplace_back(new Batch<TaskType>);
 }
@@ -643,8 +648,9 @@ Status Queue<TaskType>::ScheduleWithoutSplit(std::unique_ptr<TaskType>* task) {
     }
     profiler::TraceMeProducer trace_me(
         [task] {
-          return profiler::TraceMeEncode("Schedule",
-                                         {{"size", (*task)->size()}});
+          return profiler::TraceMeEncode(
+              "ScheduleWithoutSplit",
+              {{"batching_input_task_size", (*task)->size()}});
         },
         profiler::ContextType::kSharedBatchScheduler,
         batches_.back()->traceme_context_id());
@@ -672,8 +678,8 @@ Status Queue<TaskType>::ScheduleWithoutSplit(std::unique_ptr<TaskType>* task) {
 template <typename TaskType>
 Status Queue<TaskType>::ScheduleWithSplit(std::unique_ptr<TaskType>* task) {
   profiler::TraceMe trace_me([task] {
-    return profiler::TraceMeEncode("ScheduleWithSplit",
-                                   {{"size", (*task)->size()}});
+    return profiler::TraceMeEncode(
+        "ScheduleWithSplit", {{"batching_input_task_size", (*task)->size()}});
   });
   if ((*task)->size() > options_.input_batch_size_limit) {
     return errors::InvalidArgument("Task size ", (*task)->size(),
@@ -809,9 +815,8 @@ void Queue<TaskType>::ProcessBatch(std::unique_ptr<Batch<TaskType>> batch) {
   profiler::TraceMeConsumer trace_me(
       [&] {
         return profiler::TraceMeEncode(
-            "ProcessBatch",
-            {{"size", batch->size()},
-             {"padding", max_execution_batch_size() - batch->size()}});
+            "ProcessBatch", {{"batch_size_before_padding", batch->size()},
+                             {"_r", 2} /*root_event*/});
       },
       profiler::ContextType::kSharedBatchScheduler,
       batch->traceme_context_id());

@@ -1,6 +1,7 @@
 # Description:
 # Cloud file system implementation.
 
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "if_windows",
@@ -12,7 +13,7 @@ package(
     default_visibility = [
         ":dependency_whitelist",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 package_group(

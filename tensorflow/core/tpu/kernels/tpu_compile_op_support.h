@@ -48,6 +48,8 @@ namespace se = ::stream_executor;
 // List of parameters for lowering Mlir to HLO IR.
 struct MlirToHloArgs {
   const std::string& mlir_module;
+  ConfigProto::Experimental::MlirBridgeRollout rollout_state =
+      ConfigProto::Experimental::MLIR_BRIDGE_ROLLOUT_ENABLED;
 };
 
 // Variant of guaranteed constant tensors types.
@@ -138,17 +140,6 @@ se::port::Status CreateHloModules(
     const XlaCompiler::CompilationResult& compilation_result,
     const absl::optional<xla::DeviceAssignment>& device_assignment,
     std::vector<std::unique_ptr<xla::HloModule>>* hlo_modules);
-
-se::port::StatusOr<TpuAotCompilationRequestProto>
-CreateTpuAotCompilationRequest(
-    const xla::HloModuleGroup& module_group,
-    const XlaCompiler::CompilationResult& compilation_result,
-    const TPUCompileMetadataProto& metadata,
-    const std::vector<std::vector<xla::Shape>>& per_core_arg_shapes,
-    const std::vector<std::vector<xla::Shape>>& per_core_output_shapes,
-    const std::vector<std::vector<std::pair<int, bool>>>&
-        per_core_variable_indices,
-    const absl::optional<xla::DeviceAssignment>& device_assignment);
 
 se::port::StatusOr<TpuCompilationRequestProto> CreateTpuCompilationRequest(
     const absl::variant<MlirToHloArgs, FunctionToHloArgs>& computation,

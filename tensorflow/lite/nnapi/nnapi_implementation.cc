@@ -99,6 +99,8 @@ uint32_t CalculateAndroidSdkVersion(NnApi const& nnapi) {
       nnapi.ANeuralNetworksModel_relaxComputationFloat32toFloat16 != nullptr;
   bool has_12 = nnapi.ANeuralNetworks_getDeviceCount != nullptr;
   bool has_13 = nnapi.ANeuralNetworksCompilation_setTimeout != nullptr;
+  bool has_14 =
+      nnapi.ANeuralNetworksExecution_enableInputAndOutputPadding != nullptr;
 
   uint32_t sdk_version = 0;
   if (has_10) {
@@ -112,6 +114,9 @@ uint32_t CalculateAndroidSdkVersion(NnApi const& nnapi) {
   }
   if (sdk_version == 29 && has_13) {
     sdk_version = 30;
+  }
+  if (sdk_version == 30 && has_14) {
+    sdk_version = 31;
   }
   return sdk_version;
 }
@@ -146,10 +151,22 @@ const NnApi LoadNnApi() {
   void* libneuralnetworks = nullptr;
   // TODO(b/123243014): change RTLD_LOCAL? Assumes there can be multiple
   // instances of nn api RT
-  libneuralnetworks = dlopen("libneuralnetworks.so", RTLD_LAZY | RTLD_LOCAL);
+  static const char nnapi_library_name[] = "libneuralnetworks.so";
+  libneuralnetworks = dlopen(nnapi_library_name, RTLD_LAZY | RTLD_LOCAL);
+#ifdef __ANDROID__
+  // Note: If there is an problem trying to open the NNAPI library on a
+  // non-Android system, the error message is suppressed. This is to avoid
+  // showing confusing errors when running in environments that do not support
+  // NNAPI. As more platforms support NNAPI, the #ifdef logic above can be
+  // expanded.
   if (libneuralnetworks == nullptr) {
-    NNAPI_LOG("nnapi error: unable to open library %s", "libneuralnetworks.so");
+    const char* error = dlerror();
+    if (error) {
+      NNAPI_LOG("%s\n", error);
+    }
+    NNAPI_LOG("nnapi error: unable to open library %s", nnapi_library_name);
   }
+#endif  // __ANDROID__
 
   nnapi.nnapi_exists = libneuralnetworks != nullptr;
 
@@ -282,6 +299,10 @@ const NnApi LoadNnApi() {
                          ANeuralNetworksEvent_getSyncFenceFd);
   LOAD_FUNCTION_OPTIONAL(libneuralnetworks,
                          ANeuralNetworksExecution_startComputeWithDependencies);
+
+  // API 31 methods
+  LOAD_FUNCTION_OPTIONAL(libneuralnetworks,
+                         ANeuralNetworksExecution_enableInputAndOutputPadding);
 
 #ifndef __ANDROID__
   // If libneuralnetworks.so is loaded, but android_sdk_version is not set,

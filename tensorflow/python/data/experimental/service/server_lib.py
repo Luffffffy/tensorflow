@@ -21,24 +21,26 @@ from __future__ import print_function
 import collections
 
 # pylint: disable=invalid-import-order,g-bad-import-order, unused-import
-from tensorflow.core.protobuf.data.experimental import service_config_pb2
+from tensorflow.core.protobuf import service_config_pb2
 from tensorflow.python import pywrap_tensorflow
 from tensorflow.python.data.experimental.service import _pywrap_server_lib
+from tensorflow.python.data.experimental.service import _pywrap_utils
 from tensorflow.python.util.tf_export import tf_export
 
 
 @tf_export("data.experimental.service.DispatcherConfig")
 class DispatcherConfig(
-    collections.namedtuple(
-        "DispatcherConfig",
-        ["port", "protocol", "work_dir", "fault_tolerant_mode"])):
+    collections.namedtuple("DispatcherConfig", [
+        "port", "protocol", "work_dir", "fault_tolerant_mode",
+        "job_gc_check_interval_ms", "job_gc_timeout_ms"
+    ])):
   """Configuration class for tf.data service dispatchers.
 
   Fields:
     port: Specifies the port to bind to. A value of 0 indicates that the server
       may bind to any available port.
-    protocol: The protocol to use for communicating with the tf.data service.
-      Acceptable values include `"grpc" and "grpc+local"`.
+    protocol: The protocol to use for communicating with the tf.data service,
+      e.g. "grpc".
     work_dir: A directory to store dispatcher state in. This
       argument is required for the dispatcher to be able to recover from
       restarts.
@@ -47,15 +49,36 @@ class DispatcherConfig(
       registered datasets and created jobs, is synchronously written to the
       journal before responding to RPCs. If `True`, `work_dir` must also be
       specified.
+    job_gc_check_interval_ms: How often the dispatcher should scan through to
+      delete old and unused jobs, in milliseconds. If not set, the runtime will
+      select a reasonable default. A higher value will reduce load on the
+      dispatcher, while a lower value will reduce the time it takes for the
+      dispatcher to garbage collect expired jobs.
+    job_gc_timeout_ms: How long a job needs to be unused before it becomes a
+      candidate for garbage collection, in milliseconds. If not set, the runtime
+      will select a reasonable default. A higher value will cause jobs to stay
+      around longer with no consumers. This is useful if there is a large gap in
+      time between when consumers read from the job. A lower value will reduce
+      the time it takes to reclaim the resources from expired jobs.
   """
 
   def __new__(cls,
               port=0,
-              protocol="grpc",
+              protocol=None,
               work_dir=None,
-              fault_tolerant_mode=False):
-    return super(DispatcherConfig, cls).__new__(cls, port, protocol, work_dir,
-                                                fault_tolerant_mode)
+              fault_tolerant_mode=False,
+              job_gc_check_interval_ms=None,
+              job_gc_timeout_ms=None):
+    if protocol is None:
+      protocol = _pywrap_utils.TF_DATA_DefaultProtocol()
+    if job_gc_check_interval_ms is None:
+      job_gc_check_interval_ms = 10 * 60 * 1000  # 10 minutes.
+    if job_gc_timeout_ms is None:
+      job_gc_timeout_ms = 5 * 60 * 1000  # 5 minutes.
+    return super(DispatcherConfig,
+                 cls).__new__(cls, port, protocol, work_dir,
+                              fault_tolerant_mode, job_gc_check_interval_ms,
+                              job_gc_timeout_ms)
 
 
 @tf_export("data.experimental.service.DispatchServer", v1=[])
@@ -68,7 +91,8 @@ class DispatchServer(object):
 
   >>> dispatcher = tf.data.experimental.service.DispatchServer()
   >>> dispatcher_address = dispatcher.target.split("://")[1]
-  >>> worker = tf.data.experimental.service.WorkerServer(WorkerConfig(
+  >>> worker = tf.data.experimental.service.WorkerServer(
+  ...     tf.data.experimental.service.WorkerConfig(
   ...     dispatcher_address=dispatcher_address))
   >>> dataset = tf.data.Dataset.range(10)
   >>> dataset = dataset.apply(tf.data.experimental.service.distribute(
@@ -102,10 +126,10 @@ class DispatchServer(object):
 
     Args:
       config: (Optional.) A `tf.data.experimental.service.DispatcherConfig`
-        configration. If `None`, the dispatcher will be use default
+        configration. If `None`, the dispatcher will use default
         configuration values.
       start: (Optional.) Boolean, indicating whether to start the server after
-        creating it.
+        creating it. Defaults to True.
     """
     config = config or DispatcherConfig()
     if config.fault_tolerant_mode and not config.work_dir:
@@ -116,7 +140,9 @@ class DispatchServer(object):
         port=config.port,
         protocol=config.protocol,
         work_dir=config.work_dir,
-        fault_tolerant_mode=config.fault_tolerant_mode)
+        fault_tolerant_mode=config.fault_tolerant_mode,
+        job_gc_check_interval_ms=config.job_gc_check_interval_ms,
+        job_gc_timeout_ms=config.job_gc_timeout_ms)
     self._server = _pywrap_server_lib.TF_DATA_NewDispatchServer(
         config_proto.SerializeToString())
     if start:
@@ -193,9 +219,10 @@ class DispatchServer(object):
 
 @tf_export("data.experimental.service.WorkerConfig")
 class WorkerConfig(
-    collections.namedtuple(
-        "WorkerConfig",
-        ["dispatcher_address", "worker_address", "port", "protocol"])):
+    collections.namedtuple("WorkerConfig", [
+        "dispatcher_address", "worker_address", "port", "protocol",
+        "heartbeat_interval_ms", "dispatcher_timeout_ms"
+    ])):
   """Configuration class for tf.data service dispatchers.
 
   Fields:
@@ -205,19 +232,37 @@ class WorkerConfig(
       connect to this worker.
     port: Specifies the port to bind to. A value of 0 indicates that the worker
       can bind to any available port.
-    protocol: (Optional.) Specifies the protocol to be used by the server.
-      Acceptable values include `"grpc" and "grpc+local"`.
+    protocol: (Optional.) Specifies the protocol to be used by the server, e.g.
+      "grpc".
+    heartbeat_interval_ms: How often the worker should heartbeat to the
+      dispatcher, in milliseconds. If not set, the runtime will select a
+      reasonable default. A higher value will reduce the load on the dispatcher,
+      while a lower value will reduce the time it takes to reclaim resources
+      from finished jobs.
+    dispatcher_timeout_ms: How long, in milliseconds, to retry requests to the
+      dispatcher before giving up and reporting an error. Defaults to 1 hour.
   """
 
   def __new__(cls,
               dispatcher_address,
               worker_address=None,
               port=0,
-              protocol="grpc"):
-    worker_address = ("localhost:%port%"
-                      if worker_address is None else worker_address)
-    return super(WorkerConfig, cls).__new__(cls, dispatcher_address,
-                                            worker_address, port, protocol)
+              protocol=None,
+              heartbeat_interval_ms=None,
+              dispatcher_timeout_ms=None):
+    if worker_address is None:
+      worker_address = "localhost:%port%"
+    if protocol is None:
+      protocol = _pywrap_utils.TF_DATA_DefaultProtocol()
+    if heartbeat_interval_ms is None:
+      heartbeat_interval_ms = 30 * 1000  # 30 seconds
+    if dispatcher_timeout_ms is None:
+      dispatcher_timeout_ms = 60 * 60 * 1000  # 1 hour
+
+    return super(WorkerConfig,
+                 cls).__new__(cls, dispatcher_address, worker_address, port,
+                              protocol, heartbeat_interval_ms,
+                              dispatcher_timeout_ms)
 
 
 @tf_export("data.experimental.service.WorkerServer", v1=[])
@@ -245,7 +290,7 @@ class WorkerServer(object):
 
   ```
   worker = tf.data.experimental.service.WorkerServer(
-      port=5051, dispatcher_address="grpc://localhost:5050")
+      port=5051, dispatcher_address="localhost:5050")
   worker.join()
   ```
   """
@@ -256,15 +301,21 @@ class WorkerServer(object):
     Args:
       config: A `tf.data.experimental.service.WorkerConfig` configration.
       start: (Optional.) Boolean, indicating whether to start the server after
-        creating it.
+        creating it. Defaults to True.
     """
     if config.dispatcher_address is None:
       raise ValueError("must specify a dispatcher_address")
-    config_proto = service_config_pb2.WorkerConfig(
-        dispatcher_address=config.dispatcher_address,
-        worker_address=config.worker_address,
-        port=config.port,
-        protocol=config.protocol)
+    if isinstance(config, service_config_pb2.WorkerConfig):
+      config_proto = config
+    else:
+      config_proto = service_config_pb2.WorkerConfig(
+          dispatcher_address=config.dispatcher_address,
+          worker_address=config.worker_address,
+          port=config.port,
+          protocol=config.protocol,
+          heartbeat_interval_ms=config.heartbeat_interval_ms,
+          dispatcher_timeout_ms=config.dispatcher_timeout_ms,
+          data_transfer_protocol=None)
     self._server = _pywrap_server_lib.TF_DATA_NewWorkerServer(
         config_proto.SerializeToString())
     if start:
@@ -286,7 +337,7 @@ class WorkerServer(object):
 
     ```
     worker_server = tf.data.experimental.service.WorkerServer(
-        port=5051, dispatcher_address="grpc://localhost:5050")
+        port=5051, dispatcher_address="localhost:5050")
     worker_server.join()
     ```
 
@@ -317,3 +368,7 @@ class WorkerServer(object):
     The returned string will be in the form address:port, e.g. "localhost:1000".
     """
     return "localhost:{0}".format(self._server.bound_port())
+
+  def _num_tasks(self):
+    """Returns the number of tasks currently being executed on the worker."""
+    return self._server.num_tasks()

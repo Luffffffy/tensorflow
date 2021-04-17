@@ -39,6 +39,10 @@ from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training import coordinator
 
 
+def _is_gpu_device(device):
+  return tf_device.DeviceSpec.from_string(device).device_type == "GPU"
+
+
 def call_for_each_replica(strategy, fn, args=None, kwargs=None):
   """Call `fn` on each worker devices(replica).
 
@@ -60,6 +64,13 @@ def call_for_each_replica(strategy, fn, args=None, kwargs=None):
     kwargs = {}
 
   if isinstance(fn, def_function.Function):
+    # Don't lift up the tf.function decoration if `fn` is compiled with XLA
+    # and all devices are GPU. In this case we will use collectives to do
+    # cross-device communication, thus no merge_call is in the path.
+    if fn._jit_compile and all(  # pylint: disable=protected-access
+        [_is_gpu_device(d) for d in strategy.extended.worker_devices]):
+      return _call_for_each_replica(strategy, fn, args, kwargs)
+
     if strategy not in _cfer_fn_cache:
       _cfer_fn_cache[strategy] = weakref.WeakKeyDictionary()
     wrapped = _cfer_fn_cache[strategy].get(fn)
@@ -246,6 +257,9 @@ class _MirroredReplicaThread(threading.Thread):
     self.distribution = dist
     self.devices = devices
     self.replica_id = replica_id
+    self.replica_id_in_sync_group = (
+        dist.extended._get_replica_id_in_sync_group(replica_id))  # pylint: disable=protected-access
+
     self.variable_creator_fn = variable_creator_fn
     # State needed to run and return the results of `fn`.
     self.main_fn = fn
@@ -310,7 +324,8 @@ class _MirroredReplicaThread(threading.Thread):
           _enter_graph(self.graph, self.in_eager,
                        self._variable_creator_stack), \
           context.device_policy(self.context_device_policy), \
-          _MirroredReplicaContext(self.distribution, self.replica_id), \
+          _MirroredReplicaContext(self.distribution,
+                                  self.replica_id_in_sync_group), \
           ops.device(self.devices[self.replica_id]), \
           ops.name_scope(self._name_scope), \
           variable_scope.variable_scope(

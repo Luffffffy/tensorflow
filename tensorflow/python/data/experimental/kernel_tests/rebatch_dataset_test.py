@@ -22,6 +22,7 @@ from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.python.data.experimental.ops import distribute
+from tensorflow.python.data.kernel_tests import checkpoint_test_base
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.util import nest
@@ -285,6 +286,40 @@ class RebatchDatasetTest(test_base.DatasetTestBase, parameterized.TestCase):
     self.assertEqual(expected_shapes, _flat_shapes(rebatched_dataset))
 
     expected_output = [[0], [1], [2], [3], [], [4], [5], [6], [7], []]
+    self.assertDatasetProduces(rebatched_dataset, expected_output)
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(drop_remainder=[True, False])))
+  def testEmptyFirstSplits(self, drop_remainder):
+    dataset = dataset_ops.Dataset.range(8).batch(4, drop_remainder=True)
+    rebatched_dataset = distribute._RebatchDataset(
+        dataset, batch_sizes=[0, 1], drop_remainder=drop_remainder)
+
+    expected_shapes = [[None]]
+    self.assertEqual(expected_shapes, _flat_shapes(rebatched_dataset))
+
+    # We have an extra element at the end because if the desired batch size is
+    # zero, then we never read any inputs from the input_dataset at all, so we
+    # will keep producting empty outputs until we reach a non zero desired batch
+    # size split.
+    expected_output = [[], [0], [], [1], [], [2], [], [3],
+                       [], [4], [], [5], [], [6], [], [7], []]
+    self.assertDatasetProduces(rebatched_dataset, expected_output)
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         combinations.combine(drop_remainder=[True, False])))
+  def testEmptyLastSplits(self, drop_remainder):
+    dataset = dataset_ops.Dataset.range(8).batch(4, drop_remainder=True)
+    rebatched_dataset = distribute._RebatchDataset(
+        dataset, batch_sizes=[1, 0], drop_remainder=drop_remainder)
+
+    expected_shapes = [[None]]
+    self.assertEqual(expected_shapes, _flat_shapes(rebatched_dataset))
+
+    expected_output = [[0], [], [1], [], [2], [], [3], [],
+                       [4], [], [5], [], [6], [], [7], []]
     self.assertDatasetProduces(rebatched_dataset, expected_output)
 
   @combinations.generate(
@@ -589,6 +624,36 @@ class ComputeBatchSizeTest(test_base.DatasetTestBase, parameterized.TestCase):
     dataset = dataset_ops.Dataset.zip((dataset.batch(4), dataset.batch(8)))
     batch_size = distribute.compute_batch_size(dataset)
     self.assertEqual(-1, self.evaluate(batch_size))
+
+
+class LegacyRebatchDatasetCheckpointTest(
+    checkpoint_test_base.CheckpointTestBase, parameterized.TestCase):
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testCore(self):
+
+    def build_dataset(num_elements, batch_size):
+      return distribute._LegacyRebatchDataset(
+          dataset_ops.Dataset.range(num_elements).batch(
+              4 * batch_size, drop_remainder=True),
+          num_replicas=4)
+
+    self.run_core_tests(lambda: build_dataset(64, 8), 8)
+
+
+class RebatchDatasetCheckpointTest(checkpoint_test_base.CheckpointTestBase,
+                                   parameterized.TestCase):
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testCore(self):
+
+    def build_dataset(num_elements, batch_size):
+      return distribute._RebatchDataset(
+          dataset_ops.Dataset.range(num_elements).batch(
+              2 * batch_size, drop_remainder=True),
+          batch_sizes=[batch_size, batch_size])
+
+    self.run_core_tests(lambda: build_dataset(64, 8), 8)
 
 
 if __name__ == "__main__":

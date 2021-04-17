@@ -42,6 +42,10 @@ API.
 
 ## Run inference in Java
 
+See the
+[Object Detection reference app](https://github.com/tensorflow/examples/tree/master/lite/examples/object_detection/android/)
+for an example of how to use `ObjectDetector` in an Android app.
+
 ### Step 1: Import Gradle dependency and other settings
 
 Copy the `.tflite` model file to the assets directory of the Android module
@@ -63,7 +67,7 @@ dependencies {
     // Other dependencies
 
     // Import the Task Vision Library dependency
-    implementation 'org.tensorflow:tensorflow-lite-task-vision:0.0.0-nightly'
+    implementation 'org.tensorflow:tensorflow-lite-task-vision:0.1.0'
 }
 ```
 

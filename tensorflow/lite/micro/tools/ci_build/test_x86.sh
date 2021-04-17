@@ -29,7 +29,15 @@ readable_run make -f tensorflow/lite/micro/tools/make/Makefile clean
 # TODO(b/143715361): downloading first to allow for parallel builds.
 readable_run make -f tensorflow/lite/micro/tools/make/Makefile third_party_downloads
 
-# First make sure that the release build succeeds.
+# Next, build w/o TF_LITE_STATIC_MEMORY to catch additional errors.
+# TODO(b/160955687): We run the tests w/o TF_LITE_STATIC_MEMORY to make the
+# internal and open source CI consistent. See b/160955687#comment7 for more
+# details.
+readable_run make -f tensorflow/lite/micro/tools/make/Makefile clean
+readable_run make -j8 -f tensorflow/lite/micro/tools/make/Makefile BUILD_TYPE=no_tf_lite_static_memory test
+
+# Next, make sure that the release build succeeds.
+readable_run make -f tensorflow/lite/micro/tools/make/Makefile clean
 readable_run make -j8 -f tensorflow/lite/micro/tools/make/Makefile BUILD_TYPE=release build
 
 # Next, build w/o release so that we can run the tests and get additional
@@ -37,6 +45,3 @@ readable_run make -j8 -f tensorflow/lite/micro/tools/make/Makefile BUILD_TYPE=re
 readable_run make -f tensorflow/lite/micro/tools/make/Makefile clean
 readable_run make -s -j8 -f tensorflow/lite/micro/tools/make/Makefile test
 
-# Also repeat for the debug build.
-readable_run make -f tensorflow/lite/micro/tools/make/Makefile clean
-readable_run make -s -j8 -f tensorflow/lite/micro/tools/make/Makefile BUILD_TYPE=debug test

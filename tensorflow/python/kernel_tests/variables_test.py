@@ -150,7 +150,7 @@ class VariablesTestCase(test.TestCase, parameterized.TestCase):
 
   @test_util.run_deprecated_v1
   def testResourceAssignments(self):
-    with self.session(use_gpu=True):
+    with self.session():
       var = resource_variable_ops.ResourceVariable(0.0)
       plus_one = var.assign_add(1.0)
       minus_one = var.assign_sub(2.0)
@@ -173,7 +173,6 @@ class VariablesTestCase(test.TestCase, parameterized.TestCase):
       with self.assertRaisesRegex(ValueError, "shape.*and.*are incompatible"):
         var.assign(np.zeros(shape=[2, 2]))
 
-  @test_util.disable_tfrt("Graph is not supported yet. b/156187905")
   @test_util.run_in_graph_and_eager_modes
   def testAssignDifferentShapesAllowed(self):
     var = variables.Variable(np.zeros(shape=[1, 1]),
@@ -183,8 +182,6 @@ class VariablesTestCase(test.TestCase, parameterized.TestCase):
     self.evaluate(var.assign(np.zeros(shape=[2, 2])))
     self.assertAllEqual(np.zeros(shape=[2, 2]), var.read_value())
 
-  @test_util.disable_tfrt("GetHostSize() is not expected to be called with "
-                          "string type. b/156761465")
   def testZeroSizeStringAssign(self):
     with self.cached_session() as sess:
       array = variables.VariableV1(

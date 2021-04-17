@@ -25,6 +25,10 @@ set(LLVM_TARGET_DEFINITIONS legalize_to_standard_patterns.td)
 mlir_tablegen(generated_legalize_to_standard.inc -gen-rewriters)
 add_public_tablegen_target(MLIRMhloLegalizeToStandardIncGen)
 
+set(LLVM_TARGET_DEFINITIONS chlo_legalize_to_hlo_patterns.td)
+mlir_tablegen(generated_chlo_legalize_to_hlo.inc -gen-rewriters)
+add_public_tablegen_target(MLIRChloLegalizeToHloIncGen)
+
 
 add_mlir_library(ChloPasses
   chlo_legalize_to_hlo.cc
@@ -32,6 +36,7 @@ add_mlir_library(ChloPasses
 
   DEPENDS
   MLIRhlo_opsIncGen
+  MLIRChloLegalizeToHloIncGen
 
   LINK_COMPONENTS
   Core
@@ -43,8 +48,9 @@ add_mlir_library(ChloPasses
 )
 
 add_mlir_library(MhloPasses
+  move_up_dynamic_broadcasts_for_fusion.cc
   legalize_gather_to_torch_index_select.cc
-  legalize_tanh_to_approximation.cc
+  legalize_trigonometric_to_approximation.cc
   lower_complex.cc
   lower_complex_patterns.td
   lower_general_dot.cc
@@ -62,6 +68,7 @@ add_mlir_library(MhloPasses
   DEPENDS
   MLIRhlo_opsIncGen
   MLIRMhloLowerComplexIncGen
+  MLIRMhloPassIncGen
 
   LINK_COMPONENTS
   Core
@@ -88,6 +95,7 @@ add_mlir_library(MhloToLhloConversion
   LmhloDialect
   MLIRIR
   MLIRPass
+  MLIRMath
 )
 
 add_mlir_library(MhloToStandard
@@ -106,6 +114,7 @@ add_mlir_library(MhloToStandard
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRPass
+  MLIRTensor
 )
 
 add_mlir_library(MhloLhloToLinalg
@@ -120,17 +129,15 @@ add_mlir_library(MhloLhloToLinalg
 
   LINK_LIBS PUBLIC
   MhloDialect
+  MLIRComplex
   MLIRIR
   MLIRPass
 )
 
 add_mlir_library(LmhloPasses
-  lhlo_copy_removal.cc
   lhlo_fuse_linalg.cc
   lhlo_legalize_to_affine.cc
   lhlo_legalize_to_gpu.cc
-  lhlo_legalize_to_llvm.cc
-  lhlo_legalize_to_llvm_pass.cc
   lhlo_legalize_to_parallel_loops.cc
 
   DEPENDS

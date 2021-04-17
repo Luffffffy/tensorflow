@@ -14,14 +14,9 @@
 #,============================================================================
 """Tests for layer graphs construction & handling."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import warnings
 
 import numpy as np
-
 
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
@@ -944,29 +939,7 @@ class NetworkConstructionTest(keras_parameterized.TestCase):
     # Check that second input was correctly added to first.
     self.assertEqual(history.history['loss'][0], 0.0)
 
-  @combinations.generate(combinations.times(
-      combinations.keras_mode_combinations(mode='eager'),
-      combinations.combine(use_keras_tensors=False)))
-  def test_only_some_in_first_arg_derived_from_keras_layer(self):
-    class MyAddAll(layers.Layer):
-
-      def call(self, inputs):
-        x = inputs[0]
-        for inp in inputs[1:]:
-          if inp is not None:
-            x = x + inp
-        return x
-
-    input1 = input_layer_lib.Input(10)
-    input2 = input_layer_lib.Input(10)
-    layer = MyAddAll()
-
-    with self.assertRaisesRegexp(ValueError, 'construct a functional'):
-      layer([0.0, input1, None, input2, None])
-
-  @combinations.generate(combinations.times(
-      combinations.keras_mode_combinations(mode='eager'),
-      combinations.combine(use_keras_tensors=True)))
+  @combinations.generate(combinations.keras_mode_combinations(mode='eager'),)
   def test_only_some_in_first_arg_derived_from_keras_layer_keras_tensors(self):
     # This functionality is unsupported in v1 graphs
 
@@ -1146,7 +1119,6 @@ class NetworkConstructionTest(keras_parameterized.TestCase):
   @combinations.generate(
       combinations.times(
           combinations.keras_mode_combinations(),
-          combinations.keras_tensor_combinations(),
           combinations.combine(share_already_used_layer=[True, False])))
   def test_call_kwarg_derived_from_keras_layer_and_first_arg_is_constant(
       self, share_already_used_layer):
@@ -1246,9 +1218,7 @@ class NetworkConstructionTest(keras_parameterized.TestCase):
     # Check that second input was correctly added to first.
     self.assertEqual(history.history['loss'][0], 0.0)
 
-  @combinations.generate(combinations.times(
-      combinations.keras_mode_combinations(mode='eager'),
-      combinations.keras_tensor_combinations()))
+  @combinations.generate(combinations.keras_mode_combinations(mode='eager'))
   def test_call_some_not_all_nested_in_first_arg_derived_from_keras_layer(self):
     # This functionality is unsupported in v1 graphs
 
@@ -1972,6 +1942,28 @@ class NestedNetworkTest(keras_parameterized.TestCase):
     # Check that 'b' was used and 'a' was ignored.
     self.assertEqual(res.shape.as_list(), [1, 1])
 
+  @combinations.generate(combinations.combine(mode=['graph', 'eager']))
+  def test_nested_dict_mapping(self):
+    a = input_layer_lib.Input(shape=(1,), dtype='int32', name='a')
+    b = input_layer_lib.Input(shape=(1,), dtype='int32', name='b')
+    c = input_layer_lib.Input(shape=(1,), dtype='int32', name='c')
+    d = input_layer_lib.Input(shape=(1,), dtype='int32', name='d')
+    inputs = {'a': (a, b), 'c': (c, d)}
+    outputs = 1000 * a + 100 * b + 10 * c + d
+    model = training_lib.Model(inputs, outputs)
+
+    a_val = array_ops.ones((1, 1), dtype='int32')
+    b_val = 2 * array_ops.ones((1, 1), dtype='int32')
+    c_val = 3 * array_ops.ones((1, 1), dtype='int32')
+    d_val = 4 * array_ops.ones((1, 1), dtype='int32')
+
+    inputs_val = {'a': (a_val, b_val), 'c': (c_val, d_val)}
+    res = model(inputs_val)
+
+    # Check that inputs were flattened in the correct order.
+    self.assertFalse(model._enable_dict_to_input_mapping)
+    self.assertEqual(self.evaluate(res), [1234])
+
 
 @combinations.generate(combinations.keras_mode_combinations())
 class AddLossTest(keras_parameterized.TestCase):
@@ -2449,6 +2441,76 @@ class InputsOutputsErrorTest(keras_parameterized.TestCase):
     with self.assertRaisesRegex(
         ValueError, r'.*expected shape=.*'):
       model({'1': np.zeros((3, 10)), '2': np.zeros((3, 6))})
+
+
+class FunctionalSubclassModel(training_lib.Model):
+
+  def __init__(self, *args, **kwargs):
+    my_input = input_layer_lib.Input(shape=(16,))
+    dense = layers.Dense(32, activation='relu')
+    output = dense(my_input)
+    outputs = {'output': output}
+    super().__init__(inputs=[my_input], outputs=outputs, *args, **kwargs)
+
+
+class MixinClass(object):
+
+  def __init__(self, foo, **kwargs):
+    self._foo = foo
+    super().__init__(**kwargs)
+
+  def get_foo(self):
+    return self._foo
+
+
+class SubclassedModel(training_lib.Model):
+
+  def __init__(self, bar, **kwargs):
+    self._bar = bar
+    super().__init__(**kwargs)
+
+  def get_bar(self):
+    return self._bar
+
+
+class MultipleInheritanceModelTest(keras_parameterized.TestCase):
+
+  def testFunctionalSubclass(self):
+    m = FunctionalSubclassModel()
+    # Some smoke test for the weights and output shape of the model
+    self.assertLen(m.weights, 2)
+    self.assertEqual(m.outputs[0].shape.as_list(), [None, 32])
+
+  def testFunctionalSubclassPreMixin(self):
+    class MixedFunctionalSubclassModel(MixinClass, FunctionalSubclassModel):
+      pass
+
+    m = MixedFunctionalSubclassModel(foo='123')
+    self.assertTrue(m._is_graph_network)
+    self.assertLen(m.weights, 2)
+    self.assertEqual(m.outputs[0].shape.as_list(), [None, 32])
+    self.assertEqual(m.get_foo(), '123')
+
+  def testFunctionalSubclassPostMixin(self):
+    # Make sure the the mixin class is also init correct when the order changed.
+
+    class MixedFunctionalSubclassModel(FunctionalSubclassModel, MixinClass):
+      pass
+
+    m = MixedFunctionalSubclassModel(foo='123')
+    self.assertTrue(m._is_graph_network)
+    self.assertLen(m.weights, 2)
+    self.assertEqual(m.outputs[0].shape.as_list(), [None, 32])
+    self.assertEqual(m.get_foo(), '123')
+
+  def testSubclassModelPreMixin(self):
+    class MixedSubclassModel(MixinClass, SubclassedModel):
+      pass
+
+    m = MixedSubclassModel(foo='123', bar='456')
+    self.assertFalse(m._is_graph_network)
+    self.assertEqual(m.get_foo(), '123')
+    self.assertEqual(m.get_bar(), '456')
 
 
 if __name__ == '__main__':

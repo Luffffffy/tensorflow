@@ -43,6 +43,20 @@ struct PaddingValues {
   int16_t height_offset;
 };
 
+struct Padding3DValues {
+  int16_t width;
+  int16_t height;
+  int16_t depth;
+  // offset is used for calculating "remaining" padding, for example, `width`
+  // is 1 and `width_offset` is 1, so padding_left is 1 while padding_right is
+  // 1 + 1 = 2.
+  int16_t width_offset;
+  // Same as width_offset except it's over the height dimension.
+  int16_t height_offset;
+  // Same as width_offset except it's over the depth dimension.
+  int16_t depth_offset;
+};
+
 // This enumeration allows for non-default formats for the weights array
 // of a fully-connected operator, allowing the use of special optimized
 // runtime paths.
@@ -170,7 +184,11 @@ class RuntimeShape {
   // rolls out.
   RuntimeShape(RuntimeShape const& other) : size_(other.DimensionsCount()) {
     if (size_ > kMaxSmallSize) {
+#ifdef TF_LITE_STATIC_MEMORY
+      TFLITE_CHECK(false && "No shape resizing supported on this platform");
+#else
       dims_pointer_ = new int32_t[size_];
+#endif
     }
     std::memcpy(DimsData(), other.DimsData(), sizeof(int32_t) * size_);
   }
@@ -392,6 +410,20 @@ inline int Offset(const RuntimeShape& shape, int i0, int i1, int i2, int i3) {
   return ((i0 * dims_data[1] + i1) * dims_data[2] + i2) * dims_data[3] + i3;
 }
 
+inline int Offset(const RuntimeShape& shape, int i0, int i1, int i2, int i3,
+                  int i4) {
+  TFLITE_DCHECK_EQ(shape.DimensionsCount(), 5);
+  const int* dims_data = reinterpret_cast<const int*>(shape.DimsDataUpTo5D());
+  TFLITE_DCHECK(i0 >= 0 && i0 < dims_data[0]);
+  TFLITE_DCHECK(i1 >= 0 && i1 < dims_data[1]);
+  TFLITE_DCHECK(i2 >= 0 && i2 < dims_data[2]);
+  TFLITE_DCHECK(i3 >= 0 && i3 < dims_data[3]);
+  TFLITE_DCHECK(i4 >= 0 && i4 < dims_data[4]);
+  return (((i0 * dims_data[1] + i1) * dims_data[2] + i2) * dims_data[3] + i3) *
+             dims_data[4] +
+         i4;
+}
+
 inline int Offset(const Dims<4>& dims, int i0, int i1, int i2, int i3) {
   TFLITE_DCHECK(i0 >= 0 && i0 < dims.sizes[0]);
   TFLITE_DCHECK(i1 >= 0 && i1 < dims.sizes[1]);
@@ -438,7 +470,7 @@ int MatchingArraySize(const ArrayType1& array1, int index1,
 inline int MatchingDim(const RuntimeShape& shape1, int index1,
                        const RuntimeShape& shape2, int index2) {
   TFLITE_DCHECK_EQ(shape1.Dims(index1), shape2.Dims(index2));
-  return shape1.Dims(index1);
+  return std::min(shape1.Dims(index1), shape2.Dims(index2));
 }
 
 template <typename... Args>
@@ -840,6 +872,19 @@ struct ConvParams {
   float float_activation_max;
 };
 
+struct Conv3DParams {
+  Padding3DValues padding_values;
+  int stride_width;
+  int stride_height;
+  int stride_depth;
+  int dilation_width;
+  int dilation_height;
+  int dilation_depth;
+  // float activation params.
+  float float_activation_min;
+  float float_activation_max;
+};
+
 struct DepthToSpaceParams {
   int32_t block_size;
 };
@@ -907,6 +952,7 @@ struct FullyConnectedParams {
 
 struct GatherParams {
   int16_t axis;
+  int16_t batch_dims;
 };
 
 struct L2NormalizationParams {
@@ -973,9 +1019,9 @@ struct PackParams {
 
 struct PadParams {
   int8_t left_padding_count;
-  int32_t left_padding[4];
+  int32_t left_padding[5];
   int8_t right_padding_count;
-  int32_t right_padding[4];
+  int32_t right_padding[5];
   ResizingCategory resizing_category;
 };
 
@@ -1025,9 +1071,9 @@ struct ResizeNearestNeighborParams {
 
 struct SliceParams {
   int8_t begin_count;
-  int32_t begin[4];
+  int32_t begin[5];
   int8_t size_count;
-  int32_t size[4];
+  int32_t size[5];
 };
 
 struct SoftmaxParams {

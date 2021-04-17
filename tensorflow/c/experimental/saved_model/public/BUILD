@@ -8,12 +8,14 @@
 # programmatic checks that all "public" headers only include other "public"
 # headers.
 
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
+
 package(
     # This is intentionally public
     default_visibility = [
         "//visibility:public",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 # TODO(bmzhao): Remove these exports_files and rules, swap with cc_public_library instead.
@@ -26,6 +28,9 @@ exports_files(
         "saved_model_api.h",
         "signature_def_function.h",
         "signature_def_function_metadata.h",
+        "signature_def_param.h",
+        "signature_def_param_list.h",
+        "tensor_spec.h",
     ],
     visibility = ["//tensorflow/c/experimental/saved_model/internal:__pkg__"],
 )
@@ -43,6 +48,9 @@ cc_library(
         ":saved_model_api",
         ":signature_def_function",
         ":signature_def_function_metadata",
+        ":signature_def_param",
+        ":signature_def_param_list",
+        ":tensor_spec",
     ],
 )
 
@@ -74,4 +82,19 @@ alias(
 alias(
     name = "signature_def_function_metadata",
     actual = "//tensorflow/c/experimental/saved_model/internal:signature_def_function_metadata",
+)
+
+alias(
+    name = "signature_def_param",
+    actual = "//tensorflow/c/experimental/saved_model/internal:signature_def_param",
+)
+
+alias(
+    name = "signature_def_param_list",
+    actual = "//tensorflow/c/experimental/saved_model/internal:signature_def_param_list",
+)
+
+alias(
+    name = "tensor_spec",
+    actual = "//tensorflow/c/experimental/saved_model/internal:tensor_spec",
 )

@@ -1,8 +1,10 @@
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
+
 # Experimental gcs filesystem plugin.
 load("//tensorflow:tensorflow.bzl", "get_win_copts", "tf_cc_shared_object", "tf_cc_test")
 
 package(
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 # Filesystem implementation for GCS environments

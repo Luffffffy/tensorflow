@@ -52,15 +52,27 @@ static Status PopulateResultTupleBuffers(const ShapedBuffer& result,
 
 StatusOr<ExecutionOutput>
 TpuExecutableInterface::AllocateOutputMemoryWithInputReuse(
-    const Shape& host_shape, const HloInputOutputAliasConfig& alias_config,
+    const Shape& shape, const HloInputOutputAliasConfig& alias_config,
     se::DeviceMemoryAllocator* allocator,
     std::vector<ExecutionInput>* arguments, se::Stream* stream,
     se::Stream* transfer_stream) {
   auto stream_exec = stream->parent();
   auto device_ordinal = stream_exec->device_ordinal();
   VLOG(3) << "AllocateOutputMemoryWithInputReuse, device = " << device_ordinal
-          << " host_shape = " << ShapeUtil::HumanStringWithLayout(host_shape);
-  Shape device_shape = HostShapeToDeviceShape(host_shape);
+          << " shape = " << ShapeUtil::HumanStringWithLayout(shape);
+  auto update_layout = [this](xla::Shape* subshape,
+                              const xla::ShapeIndex& index) {
+    if (subshape->IsArray()) {
+      CHECK(subshape->has_layout());
+      if (!subshape->layout().tiles().empty()) {
+        // Already in device shape.
+        return;
+      }
+      *subshape = HostShapeToDeviceShape(*subshape);
+    }
+  };
+  Shape device_shape = shape;
+  xla::ShapeUtil::ForEachMutableSubshape(&device_shape, update_layout);
 
   TF_RETURN_IF_ERROR(alias_config.ForEachAliasWithStatus(
       [&](const ShapeIndex& output_index,
@@ -82,16 +94,15 @@ TpuExecutableInterface::AllocateOutputMemoryWithInputReuse(
 
   if (VLOG_IS_ON(3)) {
     VLOG(3) << "AllocateOutputMemoryWithInputReuse, device = " << device_ordinal
-            << " host_shape = " << ShapeUtil::HumanStringWithLayout(host_shape);
-    if (!Shape::Equal().MinorToMajorOnlyInLayout()(host_shape, device_shape)) {
-      VLOG(3) << "Rewrote host_shape to device_shape: "
-              << ShapeUtil::HumanStringWithLayout(host_shape) << " -> "
+            << " shape = " << ShapeUtil::HumanStringWithLayout(shape);
+    if (!Shape::Equal().MinorToMajorOnlyInLayout()(shape, device_shape)) {
+      VLOG(3) << "Rewrote shape to device_shape: "
+              << ShapeUtil::HumanStringWithLayout(shape) << " -> "
               << ShapeUtil::HumanStringWithLayout(device_shape);
     }
   }
 
-  ExecutionOutput result(host_shape, std::move(device_shape), allocator,
-                         device_ordinal);
+  ExecutionOutput result(std::move(device_shape), allocator, device_ordinal);
   // Iterate through and allocate a buffer for each shape index, checking for
   // possible input buffer reuse.
   int64 reused_buffer_bytes = 0;
@@ -189,8 +200,6 @@ StatusOr<ExecutionOutput> TpuExecutableInterface::ExecuteAsyncOnStream(
           shape, alias_config, run_options->allocator(), &arguments, stream,
           run_options->run_options().host_to_device_stream()));
 
-  MarkToBeReleasedArguments(absl::MakeSpan(arguments), result);
-
   // Address of the buffer in TPU memory that is being speculated.
   absl::optional<se::DeviceMemoryBase> cross_program_prefetch_addr;
   if (hlo_module_) {
@@ -204,6 +213,7 @@ StatusOr<ExecutionOutput> TpuExecutableInterface::ExecuteAsyncOnStream(
       // data from fast memory instead of fresh data in large memory.
       auto it = arguments[parameter].MutableBuffers()->find({index});
       CHECK(it != arguments[parameter].MutableBuffers()->end());
+      CHECK(!it->second.AsDeviceMemoryBase().is_null());
       if (absl::c_none_of(result.Result().buffers(), [&](auto index_addr_pair) {
             return index_addr_pair.second.IsSameAs(
                 it->second.AsDeviceMemoryBase());
@@ -213,6 +223,11 @@ StatusOr<ExecutionOutput> TpuExecutableInterface::ExecuteAsyncOnStream(
       }
     }
   }
+
+  // MarkToBeReleasedArguments may std::move some elements of arguments, so it
+  // must run after the cross program prefetch address is calculated from the
+  // arguments.
+  MarkToBeReleasedArguments(absl::MakeSpan(arguments), result);
 
   TF_RETURN_IF_ERROR(LoadProgramAndEnqueueToStream(
       *run_options, memory_bases, result.Result().root_buffer(),

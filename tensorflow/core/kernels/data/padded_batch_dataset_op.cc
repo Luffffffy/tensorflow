@@ -63,7 +63,8 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
         traceme_metadata_(
             {{"batch_size",
               strings::Printf("%lld", static_cast<long long>(batch_size))},
-             {"drop_remainder", drop_remainder ? "true" : "false"}}) {
+             {"drop_remainder", drop_remainder ? "true" : "false"},
+             {"parallel_copy", parallel_copy ? "true" : "false"}}) {
     input_->Ref();
 
     // NOTE(mrry): Currently we implement "batch up to" semantics. If we could
@@ -117,6 +118,11 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
       return n;
     }
     return n / batch_size_ + (n % batch_size_ == 0 || drop_remainder_ ? 0 : 1);
+  }
+
+  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+    inputs->push_back(input_);
+    return Status::OK();
   }
 
   Status CheckExternalState() const override {

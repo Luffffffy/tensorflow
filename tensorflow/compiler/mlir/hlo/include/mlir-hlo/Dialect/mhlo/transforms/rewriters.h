@@ -20,14 +20,10 @@ limitations under the License.
 
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Transforms/BufferPlacement.h"
+#include "mlir/Transforms/Bufferize.h"
 #include "mlir/Transforms/DialectConversion.h"
 
 namespace mlir {
-class LLVMTypeConverter;
-class LowerToLLVMOptions;
-class OwningRewritePatternList;
-class BufferAssignmentPlacer;
 namespace mhlo {
 
 // Collection of rewrite patterns for lowering a general dot product.
@@ -49,11 +45,16 @@ void PopulateGatherToTorchIndexSelectPatterns(
 void PopulateMhloToStdPatterns(OwningRewritePatternList *patterns,
                                MLIRContext *ctx);
 
+// Collection of rewrite patterns for lowering of dynamic HLOs to LHLO dialect.
+void populateDynamicHLOToLHLOConversionPattern(
+    MLIRContext *context, BufferizeTypeConverter *converter,
+    OwningRewritePatternList *patterns, bool insert_copy = true);
+
 // Collection of rewrite patterns for lowering of HLO to LHLO dialect.
-void populateHLOToLHLOConversionPattern(
-    MLIRContext *context, BufferAssignmentPlacer *bufferAssignment,
-    BufferAssignmentTypeConverter *converter,
-    OwningRewritePatternList *patterns);
+void populateHLOToLHLOConversionPattern(MLIRContext *context,
+                                        BufferizeTypeConverter *converter,
+                                        OwningRewritePatternList *patterns);
+
 // Collection of rewrite patterns for lowering of HLO to Linalg dialect.
 void populateHLOToLinalgConversionPattern(MLIRContext *context,
                                           OwningRewritePatternList *patterns);
@@ -76,31 +77,37 @@ void SetupTransformUnrankedHloLegality(MLIRContext *context,
 void PopulateTransformUnrankedHloPatterns(MLIRContext *context,
                                           OwningRewritePatternList *patterns);
 
+void PopulateDynamicShapeFusionPatterns(MLIRContext *context,
+                                        OwningRewritePatternList *patterns);
+
 // Populate a collection of conversion patterns for un-fusing
 // batch_norm_inference and batch_norm_training into constituent HLO ops.
 // TODO(laurenzo): Implement un-fusing of batch_norm_training.
 void PopulateUnfuseBatchNormPatterns(MLIRContext *context,
                                      OwningRewritePatternList *patterns);
 
-// Populates a pattern that translates the standard TanhOp to an approximation
-// that does not use intrinsics.
-void PopulateTanhToApproximationPatterns(MLIRContext *context,
-                                         OwningRewritePatternList *patterns);
+// Populates patterns that translate the trigonometric operations from the
+// standard dialect to approximations that do not use intrinsics.
+void PopulateTrigonometricToApproximationPatterns(
+    MLIRContext *context, OwningRewritePatternList *patterns);
+
+void PopulateMoveUpDynamicBroadcastsForFusionLegality(ConversionTarget *target);
+
+void PopulateMoveUpDynamicBroadcastsForFusionPatterns(
+    MLIRContext *context, OwningRewritePatternList *patterns);
 
 }  // namespace mhlo
 
-namespace lmhlo {
-
-/// Collect a set of patterns to convert from the LHLO dialect to LLVM.
-void PopulateLhloToLLVMConversionPatterns(LLVMTypeConverter *converter,
-                                          OwningRewritePatternList *patterns);
-
-}  // namespace lmhlo
-
 namespace chlo {
 
+// Populates a collection of conversion patterns for legalizing broadcasting
+// client-HLO to their non-broadcasting counterparts.
+void PopulateChloBroadcastingPatterns(MLIRContext *context,
+                                      OwningRewritePatternList *patterns);
+
 // Populates a collection of conversion patterns for legalizing client-HLO to
-// HLO.
+// HLO. Includes decomposition of operations and inserting of explicit
+// broadcasts.
 void PopulateLegalizeChloToHloPatterns(MLIRContext *context,
                                        OwningRewritePatternList *patterns);
 

@@ -320,6 +320,7 @@ def _gen_flatbuffer_srcs_impl(ctx):
                 src.path,
             ],
             progress_message = "Generating flatbuffer files for {}:".format(src),
+            use_default_shell_env = True,
         )
     return [
         DefaultInfo(files = depset(outputs)),
@@ -361,18 +362,35 @@ _gen_flatbuffer_srcs = rule(
     output_to_genfiles = True,
 )
 
+def flatbuffer_py_strip_prefix_srcs(name, srcs = [], strip_prefix = ""):
+    """Strips path prefix.
+
+    Args:
+      name: Rule name. (required)
+      srcs: Source .py files. (required)
+      strip_prefix: Path that needs to be stripped from the srcs filepaths. (required)
+    """
+    for src in srcs:
+        native.genrule(
+            name = name + "_" + src.replace(".", "_").replace("/", "_"),
+            srcs = [src],
+            outs = [src.replace(strip_prefix, "")],
+            cmd = "cp $< $@",
+        )
+
 def _concat_flatbuffer_py_srcs_impl(ctx):
-    # Merge all generated python files. The files are concatenated and the
-    # import statements are removed. Finally we import the flatbuffer runtime
-    # library.
+    # Merge all generated python files. The files are concatenated and import
+    # statements are removed. Finally we import the flatbuffer runtime library.
+    # IMPORTANT: Our Windows shell does not support "find ... -exec" properly.
+    # If you're changing the commandline below, please build wheels and run smoke
+    # tests on all the three operating systems.
+    command = "echo 'import flatbuffers\n' > %s; "
+    command += "for f in $(find %s -name '*.py' | sort); do cat $f | sed '/import flatbuffers/d' >> %s; done "
     ctx.actions.run_shell(
         inputs = ctx.attr.deps[0].files,
         outputs = [ctx.outputs.out],
-        command = (
-            "find '%s' -name '*.py' -exec cat {} + |" +
-            "sed 's/from flatbuffers.compat import import_numpy/import numpy as np' |" +
-            "sed '/np = import_numpy()/d' > %s"
-        ) % (
+        command = command % (
+            ctx.outputs.out.path,
             ctx.attr.deps[0].files.to_list()[0].path,
             ctx.outputs.out.path,
         ),
@@ -435,7 +453,7 @@ def flatbuffer_py_library(
         srcs = [
             ":{}".format(concat_py_srcs),
         ],
-        srcs_version = "PY2AND3",
+        srcs_version = "PY3",
         deps = deps + [
             "@flatbuffers//:runtime_py",
         ],

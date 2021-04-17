@@ -134,7 +134,7 @@ class Convolution : public NodeShader {
         /*workload=*/uint3(),
         /*workgroup=*/
         GetIdealWorkgroupIfPossible(
-            ctx.gpu_info->gpu_model, OperationType::CONVOLUTION_2D,
+            *ctx.gpu_info, OperationType::CONVOLUTION_2D,
             HW(weights.h, weights.w), attr.strides, uint3(0, 0, 0),
             OHWI(weights.o, ctx.input_shapes[0][1], ctx.input_shapes[0][2],
                  ctx.input_shapes[0][3])),
@@ -149,8 +149,10 @@ class Convolution : public NodeShader {
 int SelectMultiplier(int32_t input_width,
                      const NodeShader::GenerationContext& ctx) {
   std::vector<int> multipliers = {4, 2};
-  if (!ctx.compiler_options.allow_precision_loss &&
-      ctx.gpu_info->type == GpuType::MALI) {
+  if (ctx.gpu_info->IsAMD()) {
+    return 1;
+  }
+  if (!ctx.compiler_options.allow_precision_loss && ctx.gpu_info->IsMali()) {
     multipliers = {2};
   }
   for (int i : multipliers) {
@@ -201,11 +203,12 @@ class Convolution1x1 : public NodeShader {
     for (int i = 0; i < multiplier; i++) {
       absl::StrAppend(&source, "highp vec4 result", i, " = vec4(0);\n");
     }
-    absl::StrAppend(&source, "vec4 f;\n");
+    absl::StrAppend(&source, "highp vec4 f;\n");
     absl::StrAppend(&source, "for (int l = 0; l < $src_depth$; ++l) {\n");
     for (int i = 0; i < multiplier; i++) {
-      absl::StrAppend(&source, "  vec4 input", i, " = $input_data_0[gid.x * ",
-                      multiplier, " + ", i, ",gid.y,l]$;\n");
+      absl::StrAppend(&source, "  highp vec4 input", i,
+                      " = $input_data_0[gid.x * ", multiplier, " + ", i,
+                      ",gid.y,l]$;\n");
     }
     for (int k = 0; k < 4; k++) {
       absl::StrAppend(&source, "  f = $weights[", k, ", l, gid.z]$;\n");
@@ -217,7 +220,7 @@ class Convolution1x1 : public NodeShader {
     absl::StrAppend(&source, "}\n");
     if (!attr.bias.data.empty()) {
       objects.push_back({"bias", MakeReadonlyObject(attr.bias.data)});
-      absl::StrAppend(&source, "vec4 b = $bias[gid.z]$;\n");
+      absl::StrAppend(&source, "highp vec4 b = $bias[gid.z]$;\n");
       for (int i = 0; i < multiplier; i++) {
         absl::StrAppend(&source, "result", i, " += b;\n");
       }
@@ -234,7 +237,7 @@ class Convolution1x1 : public NodeShader {
 
     auto dst_depth = DivideRoundUp(ctx.output_shapes[0][3], 4);
     uint3 workgroup = uint3(16, 16, 1);
-    if (ctx.gpu_info->type == GpuType::ADRENO) {
+    if (ctx.gpu_info->IsAdreno()) {
       if (dst_depth >= 2) {
         workgroup = uint3(8, 8, 2);
       }
@@ -276,7 +279,7 @@ class Convolution1x1 : public NodeShader {
               DivideRoundUp(ctx.output_shapes[0][3], 4)),
         /*workgroup=*/
         GetIdealWorkgroupIfPossible(
-            ctx.gpu_info->gpu_model, OperationType::CONVOLUTION_2D,
+            *ctx.gpu_info, OperationType::CONVOLUTION_2D,
             HW(attr.weights.shape.h, attr.weights.shape.w), attr.strides,
             workgroup,
             OHWI(attr.weights.shape.o, ctx.input_shapes[0][1],

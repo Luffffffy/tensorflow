@@ -70,11 +70,11 @@ void MklQuantizationRangeForMultiplication(float min_a, float max_a,
   float* min_c = (*min_c_vector)->flat<float>().data();
   float* max_c = (*max_c_vector)->flat<float>().data();
 
-#ifndef ENABLE_MKLDNN_THREADPOOL
+#ifdef ENABLE_ONEDNN_OPENMP
 #pragma omp parallel for
-#endif  // !ENABLE_MKLDNN_THREADPOOL
+#endif  // ENABLE_ONEDNN_OPENMP
   // TODO: Add eigen parallel_for
-  for (size_t n = 0; n < n_channel; ++n) {
+  for (int64_t n = 0; n < n_channel; ++n) {
     float a_float_for_one_quant_level =
         MklFloatForOneQuantizedLevel<T1>(min_a, max_a);
     float b_float_for_one_quant_level =

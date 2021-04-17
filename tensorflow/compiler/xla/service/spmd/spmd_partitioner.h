@@ -21,6 +21,7 @@ limitations under the License.
 #include <unordered_map>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/types/optional.h"
 #include "tensorflow/compiler/xla/service/dfs_hlo_visitor_with_default.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
@@ -45,6 +46,12 @@ struct SpmdPartitionerOptions {
   // windowed implementation in an HLO loop.
   int64 threshold_for_windowed_einsum_mib = 256;
 
+  // Whether unroll windowed einsum loop by degree of two.
+  bool unroll_windowed_einsum = false;
+
+  // Whether doing bidirectional collective permute in windowed einsum loop.
+  bool bidirectional_windowed_einsum = false;
+
   // Whether the entry computations' signature could change after partitioning.
   bool allow_module_signature_change = false;
 
@@ -53,6 +60,9 @@ struct SpmdPartitionerOptions {
   // memory-efficient, and the compiler can use the ScheduleAwareAllGatherCSE
   // pass to CSE some all-gathers which are relatively close to each other.
   bool cache_all_gather = true;
+  // When making a compromise between windowed einsum speed and memory usage
+  // prefer the former if true.
+  bool choose_faster_windowed_einsum_over_mem = false;
 };
 
 // Class to wrap the computation builder to capture information during SPMD
@@ -63,16 +73,31 @@ class SpmdBuilder : public HloComputation::Builder {
       : HloComputation::Builder(name) {
     visiting_hlo_ = hlo;
   }
-  HloInstruction* AddInstruction(std::unique_ptr<HloInstruction> instruction);
+
+  HloInstruction* AddInstruction(
+      std::unique_ptr<HloInstruction> instruction) override;
 
   const std::vector<HloInstruction*>& derived_instructions(
       HloInstruction* hlo) {
     return instructions_.at(hlo);
   }
 
-  void set_visiting_hlo(HloInstruction* hlo) { visiting_hlo_ = hlo; }
+  void set_visiting_hlo(HloInstruction* hlo) {
+    visiting_hlo_ = hlo;
+    instructions_[hlo];
+  }
 
   HloInstruction* visiting_hlo() const { return visiting_hlo_; }
+
+  // Wrapper of queries to broadcast_dims_.
+  absl::optional<const absl::flat_hash_set<int64>*> BroadcastDimsForCreatedHlo(
+      const HloInstruction* hlo) {
+    auto it = broadcast_dims_.find(hlo);
+    if (it == broadcast_dims_.end()) {
+      return absl::nullopt;
+    }
+    return &it->second;
+  }
 
  private:
   // Currently visiting instruction.
@@ -81,6 +106,12 @@ class SpmdBuilder : public HloComputation::Builder {
   // Map from the currently visiting (old) instruction to new instructions
   // created during SPMD partitioning.
   HloInstructionMap<std::vector<HloInstruction*>> instructions_;
+
+  // Maps from each created instruction to a set of dimensions that are from
+  // broadcasts or elementwise ops over broadcasts. This means elements along
+  // these dimensions have the same value.
+  absl::flat_hash_map<const HloInstruction*, absl::flat_hash_set<int64>>
+      broadcast_dims_;
 };
 
 // A set of functions that create the cross-partition collective ops.
@@ -174,7 +205,7 @@ class SpmdPartitioner : public HloModulePass {
                                       int64* next_channel_id,
                                       SpmdLogger* logger);
 
-  // Creates all-gather based on HloSharding. Can be overridden to customize.
+  // Creates all-gather(s) based on HloSharding. Can be overridden to customize.
   // The default uses a single all-gather even if there are multiple sharded
   // dimensions, and adds potential reshapes and transposes to achieve that.
   // If it returns false, the partitioner will fall back to all-reduce.
@@ -183,8 +214,16 @@ class SpmdPartitioner : public HloModulePass {
   // all-gather.
   virtual HloInstruction* AllGatherShards(
       SpmdBuilder* b, HloInstruction* operand, const HloSharding& sharding,
-      int64 channel_id, absl::Span<const int64> selected_dims,
+      int64* next_channel_id, absl::Span<const int64> selected_dims,
       const SPMDCollectiveOpsCreator& collectives_creator);
+
+  // Creates all-reduce(s) across devices along selected_dims in sharding. Can
+  // be overridden to customize.
+  virtual HloInstruction* AllReduceAlongShardingDims(
+      SpmdBuilder* b, HloInstruction* operand, const HloSharding& sharding,
+      int64* next_channel_id, absl::Span<const int64> selected_dims,
+      const SPMDCollectiveOpsCreator& collectives_creator,
+      HloComputation* reduction);
 
   const SpmdPartitionerOptions& options() { return options_; }
 
@@ -195,9 +234,24 @@ class SpmdPartitioner : public HloModulePass {
       int64* next_channel_id, SpmdLogger* logger,
       SpmdPartitionerOptions options);
 
-  // Verify that the sharding of instructions in the module are valid, and also
-  // fill in missing sharding information.
+  HloInstruction* AllGatherShardsInternal(
+      SpmdBuilder* b, HloInstruction* operand, const HloSharding& sharding,
+      int64* next_channel_id, absl::Span<const int64> selected_dims,
+      const SPMDCollectiveOpsCreator& collectives_creator, bool per_dim_ag);
+  HloInstruction* AllReduceAlongShardingDimsInternal(
+      SpmdBuilder* b, HloInstruction* operand, const HloSharding& sharding,
+      int64* next_channel_id, absl::Span<const int64> selected_dims,
+      const SPMDCollectiveOpsCreator& collectives_creator,
+      HloComputation* reduction, bool per_dim_ar);
+
+  // Verifies that the sharding of instructions in the module are valid, and
+  // also fill in missing sharding information.
   Status PreprocessSharding(HloModule* module);
+
+  // Preprocesses the graph to simplify some communication patterns. E.g., merge
+  // pad->slice into a single pad with potentially negative padding to avoid
+  // multiple halo exchanges.
+  Status PreprocessHlos(HloModule* module);
 
   const int64 num_partitions_;
   const int64 num_replicas_;
@@ -266,9 +320,9 @@ class PartitionedHlo {
   // unevenly partitioned dimensions are padded on the right, but this function
   // allows specifying left-padded dimensions, which can be used during the
   // handling of kReverse, etc.
-  PartitionedHlo PadWithValue(
-      HloInstruction* pad_value,
-      absl::Span<const int64> left_padded_dims = {}) const;
+  PartitionedHlo PadWithValue(HloInstruction* pad_value,
+                              absl::Span<const int64> left_padded_dims = {},
+                              absl::Span<const int64> skipped_dims = {}) const;
 
   // Returns the SPMD instruction.
   HloInstruction* hlo() const { return hlo_; }
@@ -321,6 +375,10 @@ class PartitionedHlo {
   absl::optional<PartitionedHlo> ReshardFromPartialReplicateWithDynamicSlice(
       const HloSharding& target);
 
+  // Helper function to reshard from partial replicate using AllToAll.
+  absl::optional<PartitionedHlo> ReshardPartialReplicateWithAllToAll(
+      const HloSharding& target);
+
   // SPMD instruction.
   HloInstruction* hlo_;
 
@@ -330,25 +388,9 @@ class PartitionedHlo {
   PartitioningState state_;
 };
 
-struct DotGeneralDimsMapping {
+struct DotConvDimsMapping {
   // The dimension numbers for the operands and output corresponding to a
   // logical dimension (e.g., batch, contracting, non-contracting). If an
-  // operand or the output doesn't have the logical dimension, it is set to
-  // -1.
-  struct DimsMapping {
-    int64 lhs;
-    int64 rhs;
-    int64 output;
-  };
-  std::vector<DimsMapping> batch_dims;
-  std::vector<DimsMapping> contracting_dims;
-  std::vector<DimsMapping> lhs_non_contracting_dims;
-  std::vector<DimsMapping> rhs_non_contracting_dims;
-};
-
-struct ConvolutionDimsMapping {
-  // The dimension numbers for the operands and output corresponding to a
-  // logical dimension (e.g., batch, parallel, non-parallel). If an
   // operand or the output doesn't have the logical dimension, it is set to
   // -1.
   struct DimsMapping {
@@ -358,8 +400,11 @@ struct ConvolutionDimsMapping {
     // input mapped to index in input_spatial_dimensions().
     int64 spatial;
   };
-  std::vector<DimsMapping> parallel_spatial_dims;
-  std::vector<DimsMapping> non_parallel_spatial_dims;
+  std::vector<DimsMapping> batch_dims;
+  std::vector<DimsMapping> contracting_dims;
+  std::vector<DimsMapping> lhs_non_contracting_dims;
+  std::vector<DimsMapping> rhs_non_contracting_dims;
+  std::vector<DimsMapping> conv_spatial_dims;
 };
 
 class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
@@ -378,6 +423,7 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
   Status HandleDot(HloInstruction* hlo) override;
   Status HandleDynamicSlice(HloInstruction* hlo) override;
   Status HandleDynamicUpdateSlice(HloInstruction* hlo) override;
+  Status HandleFft(HloInstruction* hlo) override;
   Status HandleGather(HloInstruction* hlo) override;
   Status HandleGetTupleElement(HloInstruction* hlo) override;
   Status HandleInfeed(HloInstruction* hlo) override;
@@ -403,16 +449,22 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
   Status HandlePartitionId(HloInstruction* hlo) override;
 
   // Implementation of dot partitioning given DotGeneralDimsMapping.
-  Status HandleDotHelper(
-      HloInstruction* hlo, const DotGeneralDimsMapping& dims_mapping,
-      const std::function<StatusOr<HloInstruction*>(
-          HloInstruction*, HloInstruction*, SpmdBuilder*)>& create_sharded_dot);
+  Status HandleDotHelper(HloInstruction* hlo,
+                         const DotConvDimsMapping& dims_mapping,
+                         const std::function<StatusOr<HloInstruction*>(
+                             HloInstruction*, HloInstruction*, SpmdBuilder*,
+                             const Window& conv_window)>& create_sharded_dot);
 
   // Common handle for elementwise HLOs.
   Status HandleElementwise(HloInstruction* hlo);
 
   // Common handle for HLOs that runs on a single device.
   Status HandleSingleDevice(const HloInstruction* hlo);
+
+  // CustomCall handlers per call target.
+  Status HandleCustomCallTopK(HloInstruction* hlo);
+  // Convenient custom ops defined by the partitioner itself.
+  Status HandleCustomCallSPMDInternal_RotateRight(HloInstruction* hlo);
 
   // Returns the PartitionedHlo that corresponds to the original hlo.
   PartitionedHlo& GetPartitionedHlo(const HloInstruction* hlo) {
@@ -434,7 +486,6 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
                          const std::function<HloInstruction*()>& func) {
     HloInstruction* new_hlo = func();
     new_hlo->set_sharding(hlo->sharding());
-    new_hlo->set_metadata(hlo->metadata());
     SetPartitionedHlo(
         hlo, PartitionedHlo(new_hlo, hlo->shape(), MakePartitioningState()));
     changed_ = true;
@@ -458,7 +509,8 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
   SpmdBuilder* builder() { return &b_; }
 
   StatusOr<bool> DoPartition(HloComputation* computation,
-                             const HloSharding& root_sharding);
+                             const HloSharding& root_sharding,
+                             const SpmdPartitionerOptions& options);
 
   // Information about a loop created for windowed dot-general. Used when
   // DoCodeMotionForWindowedDotGeneralLoops() executes after the visitor
@@ -468,6 +520,7 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
     int64 windowed_operand;
     bool windowed_in_contracting_dims;
     bool windowed_in_batch_dims;
+    bool operands_sharded_at_contracting_dims;
   };
 
  private:
@@ -477,7 +530,8 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
   // Performs code motion for windowed dot-general loops in
   // windowed_dot_general_loops_. Invoked after the visitor finishes traversing
   // the graph.
-  Status DoCodeMotionForWindowedDotGeneralLoops(HloComputation* computation);
+  Status DoCodeMotionForWindowedDotGeneralLoops(
+      HloComputation* computation, const SpmdPartitionerOptions& options);
 
   bool changed_;
   HloModule* module_;
@@ -504,6 +558,8 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
   SpmdLogger* logger_;
   const SpmdPartitionerOptions options_;
   SpmdPartitioner* partitioner_;
+  std::vector<HloSharding> visiting_hlo_operand_shardings_;
+  absl::optional<HloSharding> visiting_hlo_sharding_;
 };
 
 }  // namespace spmd

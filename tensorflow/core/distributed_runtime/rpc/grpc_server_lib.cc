@@ -47,6 +47,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/nccl/collective_communicator.h"
 #include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/mem.h"
@@ -133,9 +134,9 @@ Status GrpcServer::GetHostAndPort(const ServerDef& server_def,
     if (job.name() == server_def.job_name()) {
       auto iter = job.tasks().find(server_def.task_index());
       if (iter == job.tasks().end()) {
-        return errors::InvalidArgument("Task ", server_def.task_index(),
-                                       " was not defined in job \"",
-                                       server_def.job_name(), "\"");
+        return errors::Internal("Task ", server_def.task_index(),
+                                " was not defined in job \"",
+                                server_def.job_name(), "\"");
       }
 
       if (server_def.port() != 0) {
@@ -189,7 +190,7 @@ Status GrpcServer::Init(const GrpcServerOptions& opts) {
     std::vector<std::unique_ptr<Device>> devices;
     TF_RETURN_IF_ERROR(
         DeviceFactory::AddDevices(sess_opts, name_prefix, &devices));
-    worker_env_.device_mgr = new StaticDeviceMgr(std::move(devices));
+    worker_env_.device_mgr = new DynamicDeviceMgr(std::move(devices));
     owned_device_manager_.reset(worker_env_.device_mgr);
   } else {
     worker_env_.device_mgr = opts.local_device_mgr;
@@ -279,15 +280,15 @@ Status GrpcServer::Init(const GrpcServerOptions& opts) {
     }
   } else {
     std::unique_ptr<DeviceResolverDistributed> dev_resolver(
-        new DeviceResolverDistributed(worker_env_.device_mgr, worker_cache,
-                                      default_worker_name));
+        new DeviceResolverDistributed(worker_env_.device_mgr));
     std::unique_ptr<CollectiveParamResolverDistributed> param_resolver(
         new CollectiveParamResolverDistributed(config, worker_env_.device_mgr,
                                                dev_resolver.get(), worker_cache,
                                                default_worker_name));
     worker_env_.collective_executor_mgr.reset(new RpcCollectiveExecutorMgr(
         config, worker_env_.device_mgr, std::move(dev_resolver),
-        std::move(param_resolver), worker_cache, default_worker_name));
+        std::move(param_resolver), MaybeCreateNcclCommunicator(), worker_cache,
+        default_worker_name));
   }
 
   // Set up worker environment.
@@ -448,16 +449,15 @@ Status GrpcServer::UpdateServerDef(const ServerDef& server_def) {
     return errors::Internal("Could not parse worker name.");
   }
   std::unique_ptr<DeviceResolverDistributed> dev_resolver(
-      new DeviceResolverDistributed(worker_env_.device_mgr, worker_cache,
-                                    default_worker_name));
+      new DeviceResolverDistributed(worker_env_.device_mgr));
   std::unique_ptr<CollectiveParamResolverDistributed> param_resolver(
       new CollectiveParamResolverDistributed(
           server_def_.default_session_config(), worker_env_.device_mgr,
           dev_resolver.get(), worker_cache, default_worker_name));
   worker_env_.collective_executor_mgr.reset(new RpcCollectiveExecutorMgr(
       server_def_.default_session_config(), worker_env_.device_mgr,
-      std::move(dev_resolver), std::move(param_resolver), worker_cache,
-      default_worker_name));
+      std::move(dev_resolver), std::move(param_resolver),
+      MaybeCreateNcclCommunicator(), worker_cache, default_worker_name));
 
   master_env_.worker_cache = worker_cache;
   master_env_.collective_executor_mgr =
@@ -521,7 +521,7 @@ std::unique_ptr<Master> GrpcServer::CreateMaster(MasterEnv* master_env) {
 
 /* static */
 Status GrpcServer::Create(const ServerDef& server_def, Env* env,
-                          const DeviceMgr* local_device_mgr,
+                          DeviceMgr* local_device_mgr,
                           std::unique_ptr<ServerInterface>* out_server) {
   std::unique_ptr<GrpcServer> ret(
       new GrpcServer(server_def, env == nullptr ? Env::Default() : env));

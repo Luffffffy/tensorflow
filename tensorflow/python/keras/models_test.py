@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for `models.py` (model cloning, mainly)."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import functools
 import os
 
@@ -28,10 +24,11 @@ from tensorflow.python import keras
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
-from tensorflow.python.keras import backend as K
+from tensorflow.python.keras import backend
 from tensorflow.python.keras import keras_parameterized
 from tensorflow.python.keras import metrics
 from tensorflow.python.keras import models
+from tensorflow.python.keras import optimizer_v1
 from tensorflow.python.keras import testing_utils
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
@@ -110,16 +107,20 @@ class TestModelCloning(keras_parameterized.TestCase):
     model = models.Sequential(_get_layers(input_shape, add_input_layer))
     # Sanity check
     self.assertEqual(
-        isinstance(model._layers[0], keras.layers.InputLayer),
-        add_input_layer)
+        isinstance(
+            list(model._flatten_layers(include_self=False, recursive=False))[0],
+            keras.layers.InputLayer), add_input_layer)
     self.assertEqual(model._is_graph_network, add_input_layer)
 
     # With placeholder creation -- clone model should have an InputLayer
     # if the original model has one.
     new_model = clone_fn(model)
     self.assertEqual(
-        isinstance(new_model._layers[0], keras.layers.InputLayer),
-        add_input_layer)
+        isinstance(
+            list(
+                new_model._flatten_layers(include_self=False,
+                                          recursive=False))[0],
+            keras.layers.InputLayer), add_input_layer)
     self.assertEqual(new_model._is_graph_network, model._is_graph_network)
     if input_shape and not ops.executing_eagerly_outside_functions():
       # update ops from batch norm needs to be included
@@ -128,7 +129,9 @@ class TestModelCloning(keras_parameterized.TestCase):
     # On top of new tensor  -- clone model should always have an InputLayer.
     input_a = keras.Input(shape=(4,))
     new_model = clone_fn(model, input_tensors=input_a)
-    self.assertIsInstance(new_model._layers[0], keras.layers.InputLayer)
+    self.assertIsInstance(
+        list(new_model._flatten_layers(include_self=False, recursive=False))[0],
+        keras.layers.InputLayer)
     self.assertTrue(new_model._is_graph_network)
 
     # On top of new, non-Keras tensor  -- clone model should always have an
@@ -138,7 +141,10 @@ class TestModelCloning(keras_parameterized.TestCase):
       # saying they should not be used with EagerTensors
       input_a = keras.backend.variable(val_a)
       new_model = clone_fn(model, input_tensors=input_a)
-      self.assertIsInstance(new_model._layers[0], keras.layers.InputLayer)
+      self.assertIsInstance(
+          list(new_model._flatten_layers(include_self=False,
+                                         recursive=False))[0],
+          keras.layers.InputLayer)
       self.assertTrue(new_model._is_graph_network)
 
   @keras_parameterized.run_all_keras_modes
@@ -234,6 +240,28 @@ class TestModelCloning(keras_parameterized.TestCase):
     y = np.array([[[1], [1]], [[1], [1]]])
     loss = model.train_on_batch(x, y)
     self.assertEqual(float(loss), 0.)
+
+  def test_clone_rnn(self):
+    # Test cloning a model with multiple cells in an RNN.  This exercises a
+    # few "fancier" features such as the `Bidrectional` wrapper and
+    # `StackedRNNCells` under the hood.
+    inputs = keras.Input(shape=(3, 3))
+    cells = [
+        keras.layers.LSTMCell(
+            units=32,
+            enable_caching_device=True,
+            implementation=2,
+            activation='relu')]
+    rnn = keras.layers.RNN(cells, return_sequences=True)
+    outputs = keras.layers.Bidirectional(rnn)(inputs)
+    outputs = keras.layers.Dense(
+        12, activation='softmax', name='scores')(outputs)
+    model = keras.Model(inputs=inputs, outputs=outputs)
+    model.compile(
+        loss=keras.losses.CategoricalCrossentropy(),
+        optimizer=keras.optimizer_v2.rmsprop.RMSprop(lr=0.01),
+        metrics=['accuracy'])
+    keras.models.clone_model(model)
 
   def test_model_cloning_invalid_use_cases(self):
     seq_model = keras.models.Sequential()
@@ -420,10 +448,9 @@ class TestCloneAndBuildModel(keras_parameterized.TestCase):
     """Assert that two models have the same compile parameters."""
 
     self.assertEqual('mse', model.loss)
-    self.assertTrue(
-        isinstance(model.optimizer,
-                   (keras.optimizers.RMSprop,
-                    keras.optimizer_v2.rmsprop.RMSprop)))
+    self.assertIsInstance(
+        model.optimizer,
+        (optimizer_v1.RMSprop, keras.optimizer_v2.rmsprop.RMSprop))
 
   def _clone_and_build_test_helper(self, model, model_type):
     inp = np.random.random((10, 4))
@@ -502,7 +529,7 @@ class TestCloneAndBuildModel(keras_parameterized.TestCase):
     out = np.random.random((10, 4))
     clone_model.train_on_batch(inp, out)
 
-    self.assertEqual(K.eval(global_step), 124)
+    self.assertEqual(backend.eval(global_step), 124)
 
   @keras_parameterized.run_with_all_model_types
   @keras_parameterized.run_all_keras_modes

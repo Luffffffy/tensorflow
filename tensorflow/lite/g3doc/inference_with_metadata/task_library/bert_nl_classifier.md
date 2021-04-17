@@ -49,7 +49,7 @@ dependencies {
     // Other dependencies
 
     // Import the Task Text Library dependency
-    implementation 'org.tensorflow:tensorflow-lite-task-text:0.0.0-nightly'
+    implementation 'org.tensorflow:tensorflow-lite-task-text:0.1.0'
 }
 ```
 
@@ -65,6 +65,34 @@ List<Category> results = classifier.classify(input);
 
 See the
 [source code](https://github.com/tensorflow/tflite-support/blob/master/tensorflow_lite_support/java/src/java/org/tensorflow/lite/task/text/nlclassifier/BertNLClassifier.java)
+for more details.
+
+## Run inference in Swift
+
+### Step 1: Import CocoaPods
+
+Add the TensorFlowLiteTaskText pod in Podfile
+
+```
+target 'MySwiftAppWithTaskAPI' do
+  use_frameworks!
+  pod 'TensorFlowLiteTaskText', '~> 0.0.1-nightly'
+end
+```
+
+### Step 2: Run inference using the API
+
+```swift
+// Initialization
+let bertNLClassifier = TFLBertNLClassifier.bertNLClassifier(
+      modelPath: bertModelPath)
+
+// Run inference
+let categories = bertNLClassifier.classify(text: input)
+```
+
+See the
+[source code](https://github.com/tensorflow/tflite-support/blob/master/tensorflow_lite_support/ios/task/text/nlclassifier/Sources/TFLBertNLClassifier.h)
 for more details.
 
 ## Run inference in C++
@@ -109,7 +137,7 @@ with your own model and test data.
 The `BetNLClassifier` API expects a TFLite model with mandatory
 [TFLite Model Metadata](../../convert/metadata.md).
 
-The Metadata should meet the following requiresments:
+The Metadata should meet the following requirements:
 
 *   input_process_units for Wordpiece/Sentencepiece Tokenizer
 

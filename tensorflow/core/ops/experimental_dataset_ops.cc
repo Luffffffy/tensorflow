@@ -966,6 +966,10 @@ REGISTER_OP("SnapshotDatasetV2")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
     .Attr("compression: string = ''")
+    .Attr("reader_prefix: string = ''")
+    .Attr("writer_prefix: string = ''")
+    .Attr("hash_valid: bool = false")
+    .Attr("hash: int = 0")
     .Attr("reader_func: func")
     .Attr("shard_func: func")
     .Attr("Treader_func_args: list(type) >= 0")
@@ -985,11 +989,12 @@ REGISTER_OP("SaveDataset")
     .Attr("shard_func: func")
     .Attr("use_shard_func: bool = true")
     .Attr("Tshard_func_args: list(type) >= 0")
+    .SetIsStateful()
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle unused;
       // `path` should be a scalar.
       TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
-      return shape_inference::ScalarShape(c);
+      return Status::OK();
     });
 
 REGISTER_OP("LoadDataset")
@@ -1179,6 +1184,27 @@ REGISTER_OP("DataServiceDataset")
     .Attr("task_refresh_interval_hint_ms: int = -1")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
+    .Attr("data_transfer_protocol: string = ''")
+    .SetIsStateful()
+    .SetShapeFn(shape_inference::ScalarShape);
+
+// Adds `consumer_index` and `num_consumers` arguments to support round-robin
+// reads.
+REGISTER_OP("DataServiceDatasetV2")
+    .Input("dataset_id: int64")
+    .Input("processing_mode: string")
+    .Input("address: string")
+    .Input("protocol: string")
+    .Input("job_name: string")
+    .Input("consumer_index: int64")
+    .Input("num_consumers: int64")
+    .Input("max_outstanding_requests: int64")
+    .Input("iteration_counter: resource")
+    .Output("handle: variant")
+    .Attr("task_refresh_interval_hint_ms: int = -1")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .Attr("data_transfer_protocol: string = ''")
     .SetIsStateful()
     .SetShapeFn(shape_inference::ScalarShape);
 

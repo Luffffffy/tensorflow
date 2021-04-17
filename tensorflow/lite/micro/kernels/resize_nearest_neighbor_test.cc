@@ -16,8 +16,8 @@ limitations under the License.
 #include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/micro/kernels/kernel_runner.h"
+#include "tensorflow/lite/micro/test_helpers.h"
 #include "tensorflow/lite/micro/testing/micro_test.h"
-#include "tensorflow/lite/micro/testing/test_utils.h"
 
 namespace tflite {
 namespace testing {
@@ -27,7 +27,7 @@ using uint8_t = std::uint8_t;
 using int32_t = std::int32_t;
 
 TfLiteTensor TestCreateTensor(const float* data, TfLiteIntArray* dims) {
-  return CreateFloatTensor(data, dims);
+  return CreateTensor(data, dims);
 }
 
 TfLiteTensor TestCreateTensor(const uint8_t* data, TfLiteIntArray* dims) {
@@ -59,7 +59,7 @@ void TestResizeNearestNeighbor(const int* input_dims_data, const T* input_data,
   constexpr int tensors_size = 3;
   TfLiteTensor tensors[tensors_size] = {
       TestCreateTensor(input_data, input_dims),
-      CreateInt32Tensor(expected_size_data, expected_size_dims),
+      CreateTensor(expected_size_data, expected_size_dims),
       TestCreateTensor(output_data, output_dims),
   };
 
@@ -75,8 +75,7 @@ void TestResizeNearestNeighbor(const int* input_dims_data, const T* input_data,
   const TfLiteRegistration registration =
       tflite::ops::micro::Register_RESIZE_NEAREST_NEIGHBOR();
   micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
-                             outputs_array, &builtin_data,
-                             micro_test::reporter);
+                             outputs_array, &builtin_data);
 
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());

@@ -14,10 +14,6 @@
 # ==============================================================================
 """Integration tests for Keras applications."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl import flags
 from absl.testing import parameterized
 import numpy as np
@@ -52,8 +48,8 @@ ARG_TO_MODEL = {
                             [inception_resnet_v2.InceptionResNetV2]),
     'mobilenet': (mobilenet, [mobilenet.MobileNet]),
     'mobilenet_v2': (mobilenet_v2, [mobilenet_v2.MobileNetV2]),
-    'mobilenet_v3': (mobilenet_v3, [mobilenet_v3.MobileNetV3Small,
-                                    mobilenet_v3.MobileNetV3Large]),
+    'mobilenet_v3_small': (mobilenet_v3, [mobilenet_v3.MobileNetV3Small]),
+    'mobilenet_v3_large': (mobilenet_v3, [mobilenet_v3.MobileNetV3Large]),
     'densenet': (densenet, [densenet.DenseNet121,
                             densenet.DenseNet169, densenet.DenseNet201]),
     'nasnet_mobile': (nasnet, [nasnet.NASNetMobile]),

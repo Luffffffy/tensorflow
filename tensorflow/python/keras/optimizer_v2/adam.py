@@ -14,9 +14,6 @@
 # ==============================================================================
 """Adam optimizer implementation."""
 # pylint: disable=g-classes-have-attributes
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from tensorflow.python.eager import def_function
 from tensorflow.python.framework import ops
@@ -244,7 +241,7 @@ class Adam(optimizer_v2.OptimizerV2):
     config = super(Adam, self).get_config()
     config.update({
         'learning_rate': self._serialize_hyperparameter('learning_rate'),
-        'decay': self._serialize_hyperparameter('decay'),
+        'decay': self._initial_decay,
         'beta_1': self._serialize_hyperparameter('beta_1'),
         'beta_2': self._serialize_hyperparameter('beta_2'),
         'epsilon': self.epsilon,
@@ -416,7 +413,7 @@ class NonFusedAdam(optimizer_v2.OptimizerV2):
       weights = weights[:len(params)]
     super(NonFusedAdam, self).set_weights(weights)
 
-  @def_function.function(experimental_compile=True)
+  @def_function.function(jit_compile=True)
   def _resource_apply_dense(self, grad, var, apply_state=None):
     var_device, var_dtype = var.device, var.dtype.base_dtype
     coefficients = ((apply_state or {}).get((var_device, var_dtype)) or
@@ -437,7 +434,7 @@ class NonFusedAdam(optimizer_v2.OptimizerV2):
     var.assign_sub(
         (m * alpha) / (math_ops.sqrt(v) - coefficients['epsilon']))
 
-  @def_function.function(experimental_compile=True)
+  @def_function.function(jit_compile=True)
   def _resource_apply_sparse(self, grad, var, indices, apply_state=None):
     var_device, var_dtype = var.device, var.dtype.base_dtype
     coefficients = ((apply_state or {}).get((var_device, var_dtype)) or
@@ -468,7 +465,7 @@ class NonFusedAdam(optimizer_v2.OptimizerV2):
     config = super(NonFusedAdam, self).get_config()
     config.update({
         'learning_rate': self._serialize_hyperparameter('learning_rate'),
-        'decay': self._serialize_hyperparameter('decay'),
+        'decay': self._initial_decay,
         'beta_1': self._serialize_hyperparameter('beta_1'),
         'beta_2': self._serialize_hyperparameter('beta_2'),
         'epsilon': self.epsilon,

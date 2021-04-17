@@ -50,6 +50,7 @@ TEST(HloOpcodeTest, OpcodeProperties) {
     }
     switch (opcode) {
       case HloOpcode::kAfterAll:
+      case HloOpcode::kAllGather:
       case HloOpcode::kAllReduce:
       case HloOpcode::kAllToAll:
       case HloOpcode::kCall:
@@ -65,6 +66,7 @@ TEST(HloOpcodeTest, OpcodeProperties) {
       case HloOpcode::kRng:
       case HloOpcode::kSort:
       case HloOpcode::kTuple:
+      case HloOpcode::kReduceWindow:
         EXPECT_TRUE(HloOpcodeIsVariadic(opcode));
         break;
       default:

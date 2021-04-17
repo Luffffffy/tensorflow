@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/memory_space_assignment_utils.h"
 
+#include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
+#include "tensorflow/compiler/xla/service/hlo_instructions.h"
+
 namespace xla {
 
 bool MemorySpaceAssignmentUtils::IsValueAllowedInAlternateMemory(
@@ -58,33 +61,26 @@ bool MemorySpaceAssignmentUtils::IsValueAllowedInAlternateMemory(
   // allocated in the alternate memory.
   for (const HloPosition& position : value->positions()) {
     if ((position.instruction->opcode() == HloOpcode::kSend ||
-         position.instruction->opcode() == HloOpcode::kRecv)) {
-      // TODO(berkin): Send/recv buffers need a stable buffer allocation
-      // throughout sending/receiving. Disable memory space allocation for these
-      // for now.
-      if (position.index == ShapeIndex({0})) {
-        VLOG(4) << "Keeping value " << value->ToShortString()
-                << " in default mem because it is a send/recv buffer.";
-        return false;
-      } else if (position.index == ShapeIndex({1})) {
-        VLOG(4) << "Keeping value " << value->ToShortString()
-                << " in default mem because it is a request identifier for "
-                   "send/recv.";
-        return false;
-      }
+         position.instruction->opcode() == HloOpcode::kRecv) &&
+        DynCast<HloSendRecvInstruction>(position.instruction)
+            ->is_host_transfer()) {
+      // TODO(berkin): Host transfers using alternate memory space doesn't seem
+      // to work at the moment.
+      VLOG(4) << "Keeping value " << value->ToShortString()
+              << " in default mem because it is a send/recv buffer used for "
+                 "host transfer.";
+      return false;
     }
 
-    if ((position.instruction->opcode() == HloOpcode::kCollectivePermuteStart ||
-         position.instruction->opcode() == HloOpcode::kCollectivePermuteDone)) {
-      // Disable memory space allocation for these for now.
-      if (position.index == ShapeIndex({0})) {
-        VLOG(4) << "Keeping value " << value->ToShortString()
-                << " in default mem because it is a collective-permute buffer.";
-        return false;
-      } else if (position.index == ShapeIndex({1})) {
-        VLOG(4) << "Keeping value " << value->ToShortString()
-                << " in default mem because it is a collective-permute buffer.";
-        return false;
+    if (auto* custom_call =
+            DynCast<HloCustomCallInstruction>(position.instruction)) {
+      for (const auto& pair : custom_call->output_to_operand_aliasing()) {
+        if (position.index == pair.first) {
+          VLOG(4) << "Keeping value " << value->ToShortString()
+                  << " in default mem because it is a custom-call output that "
+                     "aliases an operand buffer.";
+          return false;
+        }
       }
     }
   }

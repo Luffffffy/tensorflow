@@ -39,7 +39,7 @@ enum class OperationType {
   BATCH_NORMALIZATION,
   BATCHED_MATMUL,
   CONCAT,
-  CONST,
+  CONSTANT,
   CONVOLUTION_2D,
   CONVOLUTION_TRANSPOSED,
   COPY,
@@ -49,7 +49,12 @@ enum class OperationType {
   ELU,
   EQUAL,
   EXP,
+  FLOOR,
+  FLOOR_DIV,
+  FLOOR_MOD,
   FULLY_CONNECTED,
+  FULLY_CONNECTED_INT8,
+  GATHER,
   GREATER,
   GREATER_EQUAL,
   HARD_SWISH,
@@ -76,6 +81,7 @@ enum class OperationType {
   REDUCE_PRODUCT,
   REDUCE_SUM,
   RELU,
+  RESAMPLER,
   RESHAPE,
   RESIZE,
   RSQRT,
@@ -85,11 +91,13 @@ enum class OperationType {
   SOFTMAX,
   SPACE_TO_BATCH,
   SPACE_TO_DEPTH,
+  SPLIT,
   SQRT,
   SQUARE,
   SQUARED_DIFF,
   SUB,
   TANH,
+  TILE,
   TRANSPOSE,
 };
 
@@ -372,7 +380,7 @@ struct PReLUAttributes {
 };
 
 struct ReduceAttributes {
-  Axis axis = Axis::UNKNOWN;
+  std::set<Axis> dims;
 };
 
 struct SoftmaxAttributes {
@@ -497,6 +505,16 @@ struct FullyConnectedAttributes {
   Tensor<Linear, DataType::FLOAT32> bias;
 };
 
+struct FullyConnectedInt8Attributes {
+  Tensor<OHWI, DataType::INT8> weights;
+  Tensor<Linear, DataType::FLOAT32> bias;
+  float scale;
+  int zero_point;
+};
+
+FullyConnectedAttributes DequatizeFullyConnectedAttr(
+    const FullyConnectedInt8Attributes& attr);
+
 // @return shape of a tensor after FullyConnected operation is applied to
 // the given input.
 BHWC CalculateOutputShape(const BHWC& input,
@@ -504,6 +522,9 @@ BHWC CalculateOutputShape(const BHWC& input,
 
 // @return shape of a tensor after Mean operation is applied to the given input.
 BHWC CalculateOutputShape(const BHWC& input, const MeanAttributes& attr);
+
+// @return shape of a tensor after Mean operation is applied to the given input.
+BHWDC CalculateOutputShape(const BHWDC& input, const MeanAttributes& attr);
 
 struct ElementwiseAttributes {
   TensorOrScalar param;
@@ -544,12 +565,21 @@ struct SpaceToDepthAttributes {
   int block_size;
 };
 
+struct SplitAttributes {
+  // Defines axis by which to split.
+  Axis axis = Axis::UNKNOWN;
+};
+
 // These help perform a combination of Quantize & Dequantize to adjust float
 // values like quantized inference would.
 struct QuantizeAndDequantizeAttributes {
   float min = 0;
   float max = 0;
   float scale = 0;
+};
+
+struct GatherAttributes {
+  Axis axis = Axis::UNKNOWN;
 };
 
 }  // namespace gpu

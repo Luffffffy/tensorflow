@@ -65,9 +65,9 @@ class LaunchDimensions {
 std::ostream& operator<<(std::ostream& out,
                          const LaunchDimensions& launch_dims);
 
-LaunchDimensions CalculateLaunchDimensions(const Shape& shape,
-                                           GpuDeviceInfo gpu_device_info,
-                                           int unroll_factor = 1);
+StatusOr<LaunchDimensions> CalculateLaunchDimensions(
+    const Shape& shape, GpuDeviceInfo gpu_device_info, int unroll_factor = 1,
+    bool few_waves = false);
 
 }  // namespace gpu
 }  // namespace xla

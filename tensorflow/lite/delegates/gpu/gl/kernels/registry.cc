@@ -46,6 +46,7 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/gl/kernels/resize.h"
 #include "tensorflow/lite/delegates/gpu/gl/kernels/slice.h"
 #include "tensorflow/lite/delegates/gpu/gl/kernels/softmax.h"
+#include "tensorflow/lite/delegates/gpu/gl/kernels/tile.h"
 #include "tensorflow/lite/delegates/gpu/gl/kernels/transpose_conv.h"
 
 #ifndef TFLITE_GPU_BINARY_RELEASE
@@ -94,6 +95,7 @@ class Registry : public NodeShader {
     insert_op(Type::RESHAPE, NewReshapeNodeShader);
     insert_op(Type::SLICE, NewSliceNodeShader);
     insert_op(Type::SOFTMAX, NewSoftmaxNodeShader);
+    insert_op(Type::TILE, NewTileNodeShader);
 
     insert_elementwise_op(Type::ABS);
     insert_elementwise_op(Type::COPY);
@@ -101,6 +103,9 @@ class Registry : public NodeShader {
     insert_elementwise_op(Type::DIV);
     insert_elementwise_op(Type::ELU);
     insert_elementwise_op(Type::EXP);
+    insert_elementwise_op(Type::FLOOR);
+    insert_elementwise_op(Type::FLOOR_DIV);
+    insert_elementwise_op(Type::FLOOR_MOD);
     insert_elementwise_op(Type::HARD_SWISH);
     insert_elementwise_op(Type::LOG);
     insert_elementwise_op(Type::NEG);
@@ -126,17 +131,20 @@ class Registry : public NodeShader {
 
   absl::Status GenerateCode(const GenerationContext& ctx,
                             GeneratedCode* generated_code) const final {
-    std::vector<std::string> errors;
     auto it = shaders_.find(ctx.op_type);
-    if (it != shaders_.end()) {
-      for (auto& shader : it->second) {
-        const auto status = shader->GenerateCode(ctx, generated_code);
-        if (status.ok()) return status;
-        errors.push_back(std::string(status.message()));
-      }
+    if (it == shaders_.end()) {
+      return absl::NotFoundError(
+          absl::StrCat("No shader implementation for ", ctx.op_type));
     }
-    return absl::NotFoundError(absl::StrCat(
-        "Suitable node shader is not found: ", absl::StrJoin(errors, ", ")));
+    std::vector<std::string> errors;
+    for (const auto& shader : it->second) {
+      const auto status = shader->GenerateCode(ctx, generated_code);
+      // Return the first suitable shader.
+      if (status.ok()) return absl::OkStatus();
+      errors.push_back(std::string(status.message()));
+    }
+    return errors.empty() ? absl::OkStatus()
+                          : absl::UnknownError(absl::StrJoin(errors, ", "));
   }
 
  private:

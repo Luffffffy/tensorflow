@@ -3,8 +3,10 @@
 # to validate that we don't make backwards-incompatible changes in particular
 # for v2.
 
+load("//tensorflow:tensorflow.bzl", "filegroup")
+
 package(
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 filegroup(

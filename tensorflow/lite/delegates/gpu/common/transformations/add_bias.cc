@@ -70,6 +70,12 @@ class AddBias : public NodeTransformation {
     }
     if (node->operation.type ==
         ToString(OperationType::DEPTHWISE_CONVOLUTION)) {
+      if (graph->FindInputs(node->id).size() != 1) {
+        return {TransformStatus::DECLINED,
+                "This transformation is only applicable to depth wise conv "
+                "with one "
+                "runtime input."};
+      }
       auto& attr = absl::any_cast<DepthwiseConvolution2DAttributes&>(
           node->operation.attributes);
       return FillBias(attr.weights.shape.o * attr.weights.shape.i, &attr.bias);
@@ -77,6 +83,11 @@ class AddBias : public NodeTransformation {
     if (node->operation.type == ToString(OperationType::FULLY_CONNECTED)) {
       auto& attr =
           absl::any_cast<FullyConnectedAttributes&>(node->operation.attributes);
+      return FillBias(attr.weights.shape.o, &attr.bias);
+    }
+    if (node->operation.type == ToString(OperationType::FULLY_CONNECTED_INT8)) {
+      auto& attr = absl::any_cast<FullyConnectedInt8Attributes&>(
+          node->operation.attributes);
       return FillBias(attr.weights.shape.o, &attr.bias);
     }
     return {TransformStatus::SKIPPED, ""};

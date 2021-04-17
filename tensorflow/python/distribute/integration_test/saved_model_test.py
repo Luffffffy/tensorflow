@@ -28,15 +28,74 @@ using Keras models are in keras*_test.py
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-
+import os
 from absl.testing import parameterized
 
 import tensorflow as tf
 import tensorflow.compat.v1 as tf1
 
 from tensorflow.python.distribute import combinations
+from tensorflow.python.distribute import multi_worker_test_base
+from tensorflow.python.distribute import parameter_server_strategy_v2
+from tensorflow.python.distribute import sharded_variable
 from tensorflow.python.distribute import strategy_combinations
+from tensorflow.python.distribute import test_util
+from tensorflow.python.distribute import values
+from tensorflow.python.eager import context
 from tensorflow.python.eager import test
+from tensorflow.python.ops import lookup_ops
+
+_sixteen_worker_pool = strategy_combinations._deferred_pool_runner(
+    has_chief=True,
+    num_workers=8,
+    initializer=strategy_combinations._get_multi_worker_mirrored_creator(
+        required_gpus=0))
+
+
+@combinations.generate(
+    combinations.combine(
+        strategy=[
+            combinations.NamedDistribution(
+                "MultiWorkerMirrored8x1CPU",
+                strategy_combinations._get_multi_worker_mirrored_creator(
+                    required_gpus=0),
+                has_chief=True,
+                num_workers=8,
+                pool_runner_fn=_sixteen_worker_pool,
+                no_xla=True,
+            ),
+        ],
+        mode=["eager"]))
+class SaveModelForMultipleWorkers(test.TestCase, parameterized.TestCase):
+
+  def test_read_sync_on_read_variable(self, strategy):
+    # TODO(b/178943315): Enable test when the design in b/17894331 is
+    # implemented.
+    self.skipTest(
+        "This test fails today due to issue in multiple workers trying to write"
+        " to same file location: b/178943315"
+    )
+
+    class Model(tf.Module):
+
+      def __init__(self):
+        self.v = tf.Variable(
+            0.,
+            synchronization=tf.VariableSynchronization.ON_READ,
+            aggregation=tf.VariableAggregation.SUM)
+
+      @tf.function(input_signature=[])
+      def __call__(self):
+        return self.v.read_value()
+
+    export_dir = os.path.join(self._get_tempdir_path_test(),
+                              "test-file-failure")
+    with strategy.scope():
+      m = Model()
+      m.v.assign(1.)
+      # This fails when multiple workers try to write to the same file location.
+      # b/178943315 for tracking this bug.
+      tf.saved_model.save(m, export_dir)
 
 
 @combinations.generate(
@@ -478,5 +537,153 @@ class SaveAndLoadForTrainingTest(test.TestCase, parameterized.TestCase):
         tf.saved_model.load(v2_export_dir)
 
 
+class PSStrategySaveAndLoadTest(test.TestCase):
+  # Test saved_model saving and loading for parameter server strategy. These
+  # tests are different enough than the tests in `SaveAndLoadForXXX` so we make
+  # a separate test class for them.
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    cluster_def = multi_worker_test_base.create_in_process_cluster(
+        num_workers=2, num_ps=2)
+    cls.cluster_resolver = tf.distribute.cluster_resolver.SimpleClusterResolver(
+        tf.train.ClusterSpec(cluster_def))
+
+  def tearDown(self):
+    super().tearDown()
+    context._reset_context()
+
+  def load_and_run_v1(self,
+                      model_dir,
+                      inputs,
+                      signature_key=tf1.saved_model.signature_constants
+                      .DEFAULT_SERVING_SIGNATURE_DEF_KEY):
+    """Load a SavedModel into a TF 1.x-style graph and run `signature_key`."""
+    graph = tf.Graph()
+    with graph.as_default(), tf1.Session() as session:
+      meta_graph_def = tf1.saved_model.load(
+          session, [tf1.saved_model.tag_constants.SERVING], model_dir)
+      signature = meta_graph_def.signature_def[signature_key]
+      feed_dict = {}
+      for arg_name in inputs.keys():
+        input_tensor = session.graph.get_tensor_by_name(
+            signature.inputs[arg_name].name)
+        feed_dict[input_tensor] = inputs[arg_name]
+      output_dict = {}
+      for output_name, output_tensor_info in signature.outputs.items():
+        output_dict[output_name] = session.graph.get_tensor_by_name(
+            output_tensor_info.name)
+      return session.run(output_dict, feed_dict)["output_0"]
+
+  class Model(tf.Module):
+
+    def __init__(self):
+      self.v1 = tf.Variable([0, 0, 0, 0])
+      self.v2 = tf.Variable([1, 1, 1, 1])
+      self.table = lookup_ops.MutableHashTable(
+          key_dtype=tf.int32, value_dtype=tf.int32, default_value=-1)
+
+    def train(self):
+      # simulate a training process to mutate the state of the model.
+      self.v1.assign([2, 2, 2, 2])
+      self.v2.assign([3, 3, 3, 3])
+      self.table.insert(keys=1, values=1)
+
+    @tf.function(input_signature=[
+        tf.TensorSpec(shape=(), dtype=tf.dtypes.int32, name="x")
+    ])
+    def __call__(self, x):
+      t = tf.math.add(self.v1, self.v2)
+      return tf.math.add(t, self.table.lookup(x))
+
+  def test_basic(self):
+    strategy = parameter_server_strategy_v2.ParameterServerStrategyV2(
+        self.cluster_resolver)
+    model_dir = self.get_temp_dir()
+    with strategy.scope():
+      m = self.Model()
+    m.train()
+    tf.saved_model.save(m, model_dir)
+
+    # Load via V2 API.
+    loaded = tf.saved_model.load(model_dir)
+    self.assertRegex(loaded.v1.device, "/job:chief/replica:0/task:0")
+    self.assertRegex(loaded.v2.device, "/job:chief/replica:0/task:0")
+    self.assertAllEqual(loaded(tf.identity(1)), [6, 6, 6, 6])
+    loaded.v2.assign([1, 1, 1, 1])
+    self.assertAllEqual(loaded(tf.identity(1)), [4, 4, 4, 4])
+
+    # Load via V1 API.
+    self.assertAllEqual(self.load_and_run_v1(model_dir, {"x": 1}), [6, 6, 6, 6])
+
+  def test_load_to_same_strategy(self):
+    strategy = parameter_server_strategy_v2.ParameterServerStrategyV2(
+        self.cluster_resolver)
+    model_dir = self.get_temp_dir()
+    with strategy.scope():
+      m = self.Model()
+    m.train()
+    tf.saved_model.save(m, model_dir)
+
+    with strategy.scope():
+      loaded = tf.saved_model.load(model_dir)
+    self.assertRegex(loaded.v1.device, "/job:ps/replica:0/task:0")
+    self.assertRegex(loaded.v2.device, "/job:ps/replica:0/task:1")
+    self.assertAllEqual(loaded(tf.identity(1)), [6, 6, 6, 6])
+
+  def test_load_to_different_strategy(self):
+    strategy = parameter_server_strategy_v2.ParameterServerStrategyV2(
+        self.cluster_resolver)
+    model_dir = self.get_temp_dir()
+    with strategy.scope():
+      m = self.Model()
+    m.train()
+    tf.saved_model.save(m, model_dir)
+
+    del m  # Garbage collect variables before we reset the context.
+    context._reset_context()
+
+    mirrored_strategy = tf.distribute.MirroredStrategy(devices=["CPU:0"])
+    with mirrored_strategy.scope():
+      loaded = tf.saved_model.load(model_dir)
+    self.assertIsInstance(loaded.v1, values.DistributedVariable)
+    self.assertAllEqual(loaded(tf.identity(1)), [6, 6, 6, 6])
+
+  def test_sharded_variable(self):
+    strategy = parameter_server_strategy_v2.ParameterServerStrategyV2(
+        self.cluster_resolver, tf1.fixed_size_partitioner(2))
+    model_dir = self.get_temp_dir()
+    with strategy.scope():
+      m = self.Model()
+      self.assertIsInstance(m.v1, sharded_variable.ShardedVariable)
+    m.train()
+    tf.saved_model.save(m, model_dir)
+
+    # ShardedVariable loading only works in v1.
+    self.assertAllEqual(self.load_and_run_v1(model_dir, {"x": 1}), [6, 6, 6, 6])
+
+    with self.assertRaisesWithLiteralMatch(
+        ValueError, "Loading `ShardedVariable` is not supported"):
+      with strategy.scope():
+        tf.saved_model.load(model_dir)
+
+    with self.assertRaisesWithLiteralMatch(
+        ValueError, "Loading `ShardedVariable` is not supported"):
+      tf.saved_model.load(model_dir)
+
+  def test_load_with_partitioner_raises_error(self):
+    model = self.Model()
+    model_dir = self.get_temp_dir()
+    tf.saved_model.save(model, model_dir)
+
+    strategy = parameter_server_strategy_v2.ParameterServerStrategyV2(
+        self.cluster_resolver, tf1.fixed_size_partitioner(2))
+    with self.assertRaisesRegex(ValueError, "`variable_partitioner`"):
+      with strategy.scope():
+        tf.saved_model.load(model_dir)
+
+
 if __name__ == "__main__":
-  combinations.main()
+  # TODO(b/172304955): enable logical devices.
+  test_util.main(config_logical_devices=False)

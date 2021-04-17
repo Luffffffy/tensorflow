@@ -19,9 +19,8 @@ namespace tensorflow {
 REGISTER6(UnaryOp, CPU, "Expm1", functor::expm1, float, Eigen::half, bfloat16,
           double, complex64, complex128);
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 REGISTER3(UnaryOp, GPU, "Expm1", functor::expm1, float, Eigen::half, double);
 #endif
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER2(UnaryOp, SYCL, "Expm1", functor::expm1, float, double);
-#endif  // TENSORFLOW_USE_SYCL
+#endif
 }  // namespace tensorflow

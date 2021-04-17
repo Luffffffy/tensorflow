@@ -17,8 +17,8 @@ limitations under the License.
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/micro/debug_log.h"
 #include "tensorflow/lite/micro/kernels/kernel_runner.h"
+#include "tensorflow/lite/micro/test_helpers.h"
 #include "tensorflow/lite/micro/testing/micro_test.h"
-#include "tensorflow/lite/micro/testing/test_utils.h"
 
 namespace tflite {
 namespace testing {
@@ -35,8 +35,7 @@ void ValidatePackGoldens(TfLiteTensor* tensors, int tensors_size,
 
   const TfLiteRegistration registration = tflite::ops::micro::Register_PACK();
   micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
-                             outputs_array, reinterpret_cast<void*>(&params),
-                             micro_test::reporter);
+                             outputs_array, reinterpret_cast<void*>(&params));
 
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
@@ -61,10 +60,9 @@ void TestPackTwoInputsFloat(const int* input1_dims_data,
   constexpr int input_size = 2;
   constexpr int output_size = 1;
   constexpr int tensors_size = input_size + output_size;
-  TfLiteTensor tensors[tensors_size] = {
-      CreateFloatTensor(input1_data, input1_dims),
-      CreateFloatTensor(input2_data, input2_dims),
-      CreateFloatTensor(output_data, output_dims)};
+  TfLiteTensor tensors[tensors_size] = {CreateTensor(input1_data, input1_dims),
+                                        CreateTensor(input2_data, input2_dims),
+                                        CreateTensor(output_data, output_dims)};
 
   TfLitePackParams builtin_data = {
       .values_count = 2,
@@ -95,11 +93,10 @@ void TestPackThreeInputsFloat(
   constexpr int input_size = 3;
   constexpr int output_size = 1;
   constexpr int tensors_size = input_size + output_size;
-  TfLiteTensor tensors[tensors_size] = {
-      CreateFloatTensor(input1_data, input1_dims),
-      CreateFloatTensor(input2_data, input2_dims),
-      CreateFloatTensor(input3_data, input3_dims),
-      CreateFloatTensor(output_data, output_dims)};
+  TfLiteTensor tensors[tensors_size] = {CreateTensor(input1_data, input1_dims),
+                                        CreateTensor(input2_data, input2_dims),
+                                        CreateTensor(input3_data, input3_dims),
+                                        CreateTensor(output_data, output_dims)};
 
   TfLitePackParams builtin_data = {
       .values_count = 3,
@@ -167,10 +164,9 @@ void TestPackTwoInputsQuantized32(const int* input1_dims_data,
   constexpr int input_size = 2;
   constexpr int output_size = 1;
   constexpr int tensors_size = input_size + output_size;
-  TfLiteTensor tensors[tensors_size] = {
-      CreateQuantized32Tensor(input1_data, input1_dims, 1.0),
-      CreateQuantized32Tensor(input2_data, input2_dims, 1.0),
-      CreateQuantized32Tensor(output_data, output_dims, 1.0)};
+  TfLiteTensor tensors[tensors_size] = {CreateTensor(input1_data, input1_dims),
+                                        CreateTensor(input2_data, input2_dims),
+                                        CreateTensor(output_data, output_dims)};
 
   TfLitePackParams builtin_data = {
       .values_count = 2,

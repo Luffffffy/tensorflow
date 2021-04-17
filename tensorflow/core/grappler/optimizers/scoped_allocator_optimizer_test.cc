@@ -356,6 +356,7 @@ class ScopedAllocatorOptimizerTest : public ::testing::Test {
     return num_control_inputs;
   }
 };
+#ifndef ENABLE_MKL
 
 TEST_F(ScopedAllocatorOptimizerTest, UnaryRewriteOnly) {
   // Tests that Rewrite of program with parallel unary Ops is done as
@@ -421,8 +422,7 @@ TEST_F(ScopedAllocatorOptimizerTest, UnaryExecute) {
   SetShapes(&graph_def);
   std::vector<Tensor> outputs;
   ExecuteGraph(graph_def,
-               /*output_names=*/{"r1:0", "r2:0", "scoped_allocator_1_2_Abs:0"},
-               &outputs);
+               /*output_names=*/{"r1:0", "r2:0"}, &outputs);
   // a + b == 2, -2, 3, 3
   // b + c == -4, -4, 3, 2
   ValidateValues(outputs, /*expected=*/{{2, 2, 3, 3}, {4, 4, 3, 2}});
@@ -596,6 +596,7 @@ TEST_F(ScopedAllocatorOptimizerTest, ConstInput) {
   }
   EXPECT_EQ(num_identity_ops, 2);
 }
+#endif  // ENABLE_MKL
 
 }  // namespace
 }  // namespace grappler

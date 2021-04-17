@@ -26,6 +26,7 @@ from absl.testing import parameterized
 from tensorflow.python.distribute import combinations
 from tensorflow.python.distribute import distribution_strategy_context as ds_context
 from tensorflow.python.distribute import strategy_combinations
+from tensorflow.python.distribute import test_util
 from tensorflow.python.distribute import tpu_strategy
 from tensorflow.python.distribute import values
 from tensorflow.python.distribute.cluster_resolver import tpu_cluster_resolver
@@ -303,63 +304,6 @@ class OnWriteVariableSync(test.TestCase, parameterized.TestCase):
       self.assertEqual(self.evaluate(component.read_value()), 3.)
 
   @combinations.generate(strategy_with_var_policy())
-  def testAssignAggregationMeanDTypeNonFloat(self, distribution):
-    if isinstance(distribution, _TPU_STRATEGIES):
-      self.skipTest("Fix sponge/6e8ab540-4c0f-4da5-aedf-86505ff810c9 before "
-                    "reenabling test.")
-
-    with distribution.scope():
-      v = variables_lib.Variable(
-          1,
-          aggregation=variable_scope.VariableAggregation.MEAN,
-          dtype=dtypes.int32)
-    self.evaluate(v.initializer)
-
-    @def_function.function
-    def assign():
-      ctx = ds_context.get_replica_context()
-      return v.assign(ctx.replica_id_in_sync_group)
-
-    # disallow assign() with distributed value in replica context.
-    with self.assertRaisesRegex(ValueError,
-                                "Cannot update non-float variables"):
-      self.evaluate(
-          distribution.experimental_local_results(
-              distribution.run(assign)))
-
-    # allow assign() with same value in replica context.
-    @def_function.function
-    def assign_same():
-      return v.assign(2)
-
-    self.evaluate(
-        distribution.experimental_local_results(
-            distribution.run(assign_same)))
-    self.assertEqual(self.evaluate(v.read_value()), 2)
-
-    # allow assign() with mirrored variable in replica context.
-    with distribution.scope():
-      v2 = variables_lib.Variable(
-          3,
-          aggregation=variable_scope.VariableAggregation.SUM,
-          dtype=dtypes.int32)
-    self.evaluate(v2.initializer)
-
-    @def_function.function
-    def assign_mirrored():
-      return v.assign(v2)
-
-    self.evaluate(
-        distribution.experimental_local_results(
-            distribution.run(assign_mirrored)))
-    self.assertEqual(self.evaluate(v.read_value()), 3)
-
-    # allow assign() in cross replica context.
-    with distribution.scope():
-      self.evaluate(v.assign(4))
-      self.assertEqual(self.evaluate(v.read_value()), 4)
-
-  @combinations.generate(strategy_with_var_policy())
   def testInitializedToSameValueInsideEagerRun(self, distribution):
     if not context.executing_eagerly(): self.skipTest("eager only test")
     v = [None]
@@ -415,24 +359,24 @@ class OnWriteVariableSync(test.TestCase, parameterized.TestCase):
       with ops.init_scope():
         if obj.w is None:
           obj.w = variables_lib.Variable(
-              0, aggregation=variables_lib.VariableAggregation.MEAN)
+              0., aggregation=variables_lib.VariableAggregation.MEAN)
           obj.v = variables_lib.Variable(
               obj.w.read_value(),
               aggregation=variables_lib.VariableAggregation.MEAN)
           self.evaluate(variables_lib.global_variables_initializer())
 
-      return obj.v.assign_add(2)
+      return obj.v.assign_add(2.)
 
     per_replica_results = self.evaluate(
         distribution.experimental_local_results(distribution.run(assign)))
-    self.assertAllEqual([2, 2], per_replica_results)
+    self.assertAllEqual([2., 2.], per_replica_results)
 
   @combinations.generate(strategy_with_var_policy())
   def testOperatorOverride(self, distribution):
 
     with distribution.scope():
       v = variable_scope.variable(
-          1, aggregation=variables_lib.VariableAggregation.MEAN)
+          1, aggregation=variables_lib.VariableAggregation.SUM)
       self.evaluate(variables_lib.global_variables_initializer())
 
     self.assertEqual(2, self.evaluate(v + 1))
@@ -500,15 +444,17 @@ class OnWriteVariableSync(test.TestCase, parameterized.TestCase):
         self.assertEqual(3.0, self.evaluate(v_on_write.read_value()))
 
 
-@combinations.generate(
-    combinations.combine(
-        distribution=[
-            strategy_combinations.mirrored_strategy_with_gpu_and_cpu,
-        ],
-        mode=["graph", "eager"],
-        use_var_policy=[True, False]))
+ms_combination = combinations.combine(
+    distribution=[strategy_combinations.mirrored_strategy_with_gpu_and_cpu],
+    mode=["graph", "eager"])
+tpu_combination = combinations.combine(
+    distribution=[strategy_combinations.tpu_strategy_packed_var],
+    mode=["graph", "eager"])
+
+
 class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
 
+  @combinations.generate(ms_combination)
   def testScatterSub(self, distribution):
     with distribution.scope():
       v = variables_lib.Variable(
@@ -533,6 +479,7 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
             distribution.run(scatter_sub)))
     self.assertAllEqual([[0., -1., -1.], [0., -1., -1.]], per_replica_results)
 
+  @combinations.generate(ms_combination)
   def testScatterAdd(self, distribution):
     with distribution.scope():
       v = variables_lib.Variable(
@@ -554,6 +501,7 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
             distribution.run(scatter_add)))
     self.assertAllEqual([[0, 2, 2], [0, 2, 2]], per_replica_results)
 
+  @combinations.generate(ms_combination)
   def testScatterDiv(self, distribution):
     with distribution.scope():
       v = variables_lib.Variable(
@@ -575,6 +523,7 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
             distribution.run(scatter_div)))
     self.assertAllEqual([[0, 2, 1], [0, 2, 1]], per_replica_results)
 
+  @combinations.generate(ms_combination)
   def testScatterMul(self, distribution):
     with distribution.scope():
       v = variables_lib.Variable(
@@ -597,6 +546,7 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
             distribution.run(scatter_mul)))
     self.assertAllClose([[2., 1.5, 1.], [2., 1.5, 1.]], per_replica_results)
 
+  @combinations.generate(ms_combination)
   def testScatterMin(self, distribution):
     with distribution.scope():
       v1 = variables_lib.Variable(
@@ -624,6 +574,7 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
             distribution.run(scatter_min, args=(v2,))))
     self.assertAllClose([[0, 1, 0], [0, 1, 0]], per_replica_results)
 
+  @combinations.generate(ms_combination)
   def testScatterMax(self, distribution):
     with distribution.scope():
       v1 = variables_lib.Variable(
@@ -651,6 +602,7 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
             distribution.run(scatter_max, args=(v2,))))
     self.assertAllClose([[1, 0, 0], [1, 0, 0]], per_replica_results)
 
+  @combinations.generate(ms_combination)
   def testScatterUpdate(self, distribution):
     with distribution.scope():
       v1 = variables_lib.Variable(
@@ -678,6 +630,40 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
             distribution.run(scatter_update, args=(v2,))))
     self.assertAllClose([[0, 3, 0], [0, 3, 0]], per_replica_results)
 
+  @combinations.generate(ms_combination + tpu_combination)
+  def testScatterOpsWithNoneAggregation(self, distribution):
+
+    def assert_close(v, op, delta, expect):
+      scatter_op = getattr(v, op)
+
+      @def_function.function
+      def scatter_xxx():
+        return scatter_op(delta)
+
+      per_replica_results = self.evaluate(
+          distribution.experimental_local_results(
+              distribution.run(scatter_xxx)))
+      self.assertAllClose([expect, expect], per_replica_results)
+
+    with distribution.scope():
+      v = variables_lib.Variable(
+          [4.], aggregation=variables_lib.VariableAggregation.NONE)
+    self.evaluate(variables_lib.global_variables_initializer())
+
+    delta = indexed_slices.IndexedSlices(
+        values=array_ops.identity([2.]),
+        indices=array_ops.identity([0]),
+        dense_shape=(1,))
+
+    assert_close(v, "scatter_sub", delta, [2.])
+    assert_close(v, "scatter_add", delta, [4.])
+    assert_close(v, "scatter_max", delta, [4.])
+    assert_close(v, "scatter_min", delta, [2.])
+    assert_close(v, "scatter_mul", delta, [4.])
+    assert_close(v, "scatter_div", delta, [2.])
+    assert_close(v, "scatter_update", delta, [2.])
+
+  @combinations.generate(ms_combination + tpu_combination)
   def testScatterOpsInCrossReplicaContext(self, distribution):
     with distribution.scope():
       v1 = variables_lib.Variable(
@@ -1329,4 +1315,4 @@ class SyncOnReadScatterReplicaTest(test.TestCase, parameterized.TestCase):
 
 
 if __name__ == "__main__":
-  combinations.main()
+  test_util.main()

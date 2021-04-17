@@ -39,6 +39,7 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import gradient_checker
 from tensorflow.python.ops import gradients_impl
+from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_impl
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import random_ops
@@ -833,17 +834,26 @@ class Conv2DTest(test.TestCase):
           results[0], results[1], atol=tol_to_use, rtol=tol_to_use)
 
   @test_util.run_in_graph_and_eager_modes
-  @test_util.run_cuda_only
   def testConv2DGroupConvFwd(self):
-    for data_format in ["NHWC", "NCHW"]:
+    if test.is_gpu_available(cuda_only=True):
+      data_formats = ["NHWC", "NCHW"]
+    # TODO(Intel-tf) Remove this check once group conv is implemented in the
+    # oneDNN based conv2d op kernel.
+    elif (not test_util.IsMklEnabled() and
+          os.getenv("TF_ENABLE_ONEDNN_OPTS", "0") == "0"):
+      data_formats = ["NHWC"]
+    else:
+      data_formats = []
+    for data_format in data_formats:
       for dilation in [1, 2]:
         for stride in [1, 2]:
-          self._VerifyGroupConvFwd([10, 32, 32, 16], [3, 3, 4, 8],
-                                   dilations=[dilation, dilation],
-                                   strides=[stride, stride],
-                                   padding="SAME",
-                                   data_format=data_format,
-                                   dtype=dtypes.float32)
+          for filter_dims in [[3, 3, 4, 8], [1, 1, 2, 16]]:
+            self._VerifyGroupConvFwd([10, 32, 32, 16], filter_dims,
+                                     dilations=[dilation, dilation],
+                                     strides=[stride, stride],
+                                     padding="SAME",
+                                     data_format=data_format,
+                                     dtype=dtypes.float32)
 
   @test_util.deprecated_graph_mode_only
   @test_util.run_cuda_only
@@ -2786,7 +2796,7 @@ class SeparableConv2DTest(test.TestCase):
       expected: An array containing the expected operation outputs.
       data_format: string data format for input tensor.
     """
-    with self.cached_session(use_gpu=True) as sess:
+    with self.cached_session():
       t1 = self._InitValues(tensor_in_sizes)
       f1 = self._InitValues(depthwise_filter_in_sizes)
       f1.set_shape(depthwise_filter_in_sizes)
@@ -2898,7 +2908,7 @@ class SeparableConv2DTest(test.TestCase):
     depthwise_filter_in_sizes = [2, 2, 2, 3]
     pointwise_filter_in_sizes = [1, 1, 6, 7]
     padding = [[0, 0], [1, 2], [3, 4], [0, 0]]
-    with self.cached_session(use_gpu=True):
+    with self.cached_session():
       # Compute the 'expected' values by manually padding before calling
       # separable_conv2d
       t1 = self._InitValues(tensor_in_sizes)
@@ -3264,6 +3274,173 @@ def GetInceptionBackFilterTest(input_size, filter_size, output_size, strides,
                             padding)
 
   return Test
+
+
+class FusedConv2DTest(test.TestCase):
+
+  def _CreateNumpyTensor(self, shape):
+    total_size = np.prod(shape)
+    return np.arange(1, total_size + 1, dtype=np.float32).reshape(shape)
+
+  def _CreateConv2D(self,
+                    input_values,
+                    filters,
+                    strides=[1, 1],
+                    padding="SAME"):
+    return nn_ops.convolution(
+        input_values, filters, strides=strides, padding=padding)
+
+  # Tests tensor forwarding of a fused Conv2D+BiasAdd+Add op when the input to
+  # Add has refcount 1.
+  @test_util.run_in_graph_and_eager_modes(use_gpu=False)
+  def testAddWithRefCountOne(self):
+    expected_output = [
+        113377, 125570, 77305, 86738, 19433, 22226, 60681, 70722, 36291, 43718,
+        7143, 9206, 9785, 12098, 4783, 6366, 779, 1134
+    ]
+    tensor_in_sizes = [1, 3, 3, 2]
+    filter_in_sizes = [2, 2, 2, 2]
+    bias_in_sizes = [2]
+
+    x = self._CreateNumpyTensor(tensor_in_sizes)
+    filter_in = self._CreateNumpyTensor(filter_in_sizes)
+    bias_in = self._CreateNumpyTensor(bias_in_sizes)
+    # To get different weights for filter
+    offset = 1
+
+    conv1 = self._CreateConv2D(x, filter_in)
+    conv2 = self._CreateConv2D(conv1, filter_in + offset)
+
+    conv = self._CreateConv2D(conv1, filter_in - offset)
+    bias_add = nn_ops.bias_add(conv, bias_in)
+    add = math_ops.add_n([bias_add, conv2])
+
+    self.assertAllEqual(
+        np.rint(expected_output),
+        self.evaluate(add).reshape(-1))
+
+  # Tests tensor forwarding of a fused Conv2D+BiasAdd+Add op when the input to
+  # Add has a total refcount of 2, and Add is its last consumer.
+  @test_util.run_in_graph_and_eager_modes(use_gpu=False)
+  def testAddWithRefCountTwoAndRunAddLast(self):
+    expected_output = [
+        1.907175e+06, 2.253505e+06, 7.809210e+05, 9.537180e+05, 1.184170e+05,
+        1.523070e+05, 5.367010e+05, 6.803700e+05, 1.867090e+05, 2.529460e+05,
+        2.362300e+04, 3.522600e+04, 5.121700e+04, 7.168300e+04, 1.494300e+04,
+        2.347400e+04, 1.558000e+03, 2.903000e+03
+    ]
+    tensor_in_sizes = [1, 3, 3, 2]
+    filter_in_sizes = [2, 2, 2, 2]
+    bias_in_sizes = [2]
+
+    x = self._CreateNumpyTensor(tensor_in_sizes)
+    filter_in = self._CreateNumpyTensor(filter_in_sizes)
+    bias_in = self._CreateNumpyTensor(bias_in_sizes)
+    # To get different weights for filter
+    offset = 1
+
+    conv1 = self._CreateConv2D(x, filter_in)
+    conv2 = self._CreateConv2D(conv1, filter_in + offset)
+
+    conv = self._CreateConv2D(conv2, filter_in - offset)
+    bias_add = nn_ops.bias_add(conv, bias_in)
+    add = math_ops.add_n([bias_add, conv1])
+
+    self.assertAllEqual(
+        np.rint(expected_output),
+        self.evaluate(add).reshape(-1))
+
+  # Tests tensor forwarding of a fused Conv2D+BiasAdd+Add op when the input to
+  # Add has refcount 2 and Add (in the fused Conv2D op) is its first consumer.
+  @test_util.run_in_graph_and_eager_modes(use_gpu=False)
+  def testAddWithRefCountTwoAndRunAddFirst(self):
+    expected_output = [
+        176161, 194450, 120673, 134822, 30545, 34734, 96041, 111102, 58149,
+        69289, 11745, 14839, 15833, 19302, 7965, 10339, 1345, 1877
+    ]
+    tensor_in_sizes = [1, 3, 3, 2]
+    filter_in_sizes = [2, 2, 2, 2]
+    bias_in_sizes = [2]
+
+    x = self._CreateNumpyTensor(tensor_in_sizes)
+    filter_in = self._CreateNumpyTensor(filter_in_sizes)
+    bias_in = self._CreateNumpyTensor(bias_in_sizes)
+    # To get different weights for filter
+    offset = 1
+
+    conv1 = self._CreateConv2D(x, filter_in)
+    conv2 = self._CreateConv2D(conv1, filter_in + offset)
+
+    conv = self._CreateConv2D(conv1, filter_in - offset)
+    bias_add = nn_ops.bias_add(conv, bias_in)
+    add = math_ops.add_n([bias_add, conv2])
+
+    relu = nn_ops.relu(add)
+    output = math_ops.add_n([relu, conv2])
+
+    self.assertAllEqual(
+        np.rint(expected_output),
+        self.evaluate(output).reshape(-1))
+
+  # Tests tensor forwarding of a fused Conv2D+BiasAdd+Add op when the input to
+  # Add has refcount 2, and there is no dependency between its two consumers.
+  @test_util.run_in_graph_and_eager_modes(use_gpu=False)
+  def testAddWithRefCountTwoAndNoDependence(self):
+    expected_output = [
+        176161, 194450, 120673, 134822, 30545, 34734, 96041, 111102, 58149,
+        69289, 11745, 14839, 15833, 19302, 7965, 10339, 1345, 1877
+    ]
+    tensor_in_sizes = [1, 3, 3, 2]
+    filter_in_sizes = [2, 2, 2, 2]
+    bias_in_sizes = [2]
+
+    x = self._CreateNumpyTensor(tensor_in_sizes)
+    filter_in = self._CreateNumpyTensor(filter_in_sizes)
+    bias_in = self._CreateNumpyTensor(bias_in_sizes)
+    # To get different weights for filter
+    offset = 1
+
+    conv1 = self._CreateConv2D(x, filter_in)
+    conv2 = self._CreateConv2D(conv1, filter_in + offset)
+
+    conv = self._CreateConv2D(conv1, filter_in - offset)
+    bias_add = nn_ops.bias_add(conv, bias_in)
+    add = math_ops.add_n([bias_add, conv2])
+
+    relu1 = nn_ops.relu(add)
+    relu2 = nn_ops.relu(conv2)
+    output = math_ops.add_n([relu1, relu2])
+
+    self.assertAllEqual(
+        np.rint(expected_output),
+        self.evaluate(output).reshape(-1))
+
+  # Tests tensor forwarding of a fused Conv2D+BiasAdd+Add op when the input to
+  # Add is the same as the input to the fused Conv2D op and needs a tensor
+  # buffer.
+  @test_util.run_in_graph_and_eager_modes(use_gpu=False)
+  def testAddWithSameSrcAndAddTensorBuffer(self):
+    expected_output = [
+        57157, 63298, 39249, 44026, 9971, 11402, 31193, 36306, 19126, 22948,
+        3970, 5060, 5135, 6350, 2666, 3524, 461, 674
+    ]
+    tensor_in_sizes = [1, 3, 3, 2]
+    filter_in_sizes = [2, 2, 2, 2]
+    bias_in_sizes = [2]
+
+    x = self._CreateNumpyTensor(tensor_in_sizes)
+    filter_in = self._CreateNumpyTensor(filter_in_sizes)
+    bias_in = self._CreateNumpyTensor(bias_in_sizes)
+
+    conv1 = self._CreateConv2D(x, filter_in)
+
+    conv = self._CreateConv2D(conv1, filter_in)
+    bias_add = nn_ops.bias_add(conv, bias_in)
+    add = math_ops.add_n([bias_add, conv1])
+
+    self.assertAllEqual(
+        np.rint(expected_output),
+        self.evaluate(add).reshape(-1))
 
 
 if __name__ == "__main__":

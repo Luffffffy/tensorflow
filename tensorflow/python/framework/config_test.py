@@ -214,14 +214,23 @@ class ConfigTest(test.TestCase, parameterized.TestCase):
   def testEnableMlirBridge(self):
     # Default value of enable_mlir_bridge is false.
     self.assertFalse(context.context().config.experimental.enable_mlir_bridge)
+    self.assertEqual(
+        context.context().config.experimental.mlir_bridge_rollout,
+        config_pb2.ConfigProto.Experimental.MLIR_BRIDGE_ROLLOUT_UNSPECIFIED)
 
     # Tests enabling mlir bridge.
     config.enable_mlir_bridge()
     self.assertTrue(context.context().config.experimental.enable_mlir_bridge)
+    self.assertEqual(
+        context.context().config.experimental.mlir_bridge_rollout,
+        config_pb2.ConfigProto.Experimental.MLIR_BRIDGE_ROLLOUT_ENABLED)
 
     # Tests disabling mlir bridge.
     config.disable_mlir_bridge()
     self.assertFalse(context.context().config.experimental.enable_mlir_bridge)
+    self.assertEqual(
+        context.context().config.experimental.mlir_bridge_rollout,
+        config_pb2.ConfigProto.Experimental.MLIR_BRIDGE_ROLLOUT_DISABLED)
 
   @reset_eager
   def testEnableMlirGraphOptimization(self):
@@ -242,7 +251,7 @@ class ConfigTest(test.TestCase, parameterized.TestCase):
   @test_util.run_gpu_only
   @reset_eager
   def testJit(self):
-    self.assertEqual(config.get_optimizer_jit(), False)
+    self.assertEqual(config.get_optimizer_jit(), '')
 
     # the following function should cause Op fusion to occur. However, there is
     # unfortunately no straightforward way to ensure this. We will just have to
@@ -258,17 +267,13 @@ class ConfigTest(test.TestCase, parameterized.TestCase):
 
     self.evaluate(fun(a, b))
 
-    config.set_optimizer_jit(True)
-    self.assertEqual(config.get_optimizer_jit(), True)
-    self.assertEqual(config.get_optimizer_jit(),
-                     context.context().optimizer_jit)
+    config.set_optimizer_jit('autoclustering')
+    self.assertEqual(config.get_optimizer_jit(), 'autoclustering')
 
     self.evaluate(fun(a, b))
 
-    config.set_optimizer_jit(False)
-    self.assertEqual(config.get_optimizer_jit(), False)
-    self.assertEqual(config.get_optimizer_jit(),
-                     context.context().optimizer_jit)
+    config.set_optimizer_jit('')
+    self.assertEqual(config.get_optimizer_jit(), '')
 
     self.evaluate(fun(a, b))
 
@@ -590,6 +595,58 @@ class DeviceTest(test.TestCase):
 
   @test_util.run_gpu_only
   @reset_eager
+  def testGetMemoryInfoBasic(self):
+    device = array_ops.zeros([]).backing_device
+    info = config.get_memory_info(device)
+    self.assertGreater(info['current'], 0)
+    self.assertGreater(info['peak'], 0)
+    self.assertEqual(info.keys(), {'current', 'peak'})
+    self.assertEqual(config.get_memory_usage(device), info['current'])
+
+  @test_util.run_gpu_only
+  @reset_eager
+  def testGetMemoryUsageSubstring(self):
+    info = config.get_memory_info('GPU:0')
+    self.assertGreater(info['current'], 0)
+
+  @reset_eager
+  def testGetMemoryInfoCPU(self):
+    with self.assertRaisesRegex(ValueError, 'CPU does not support'):
+      config.get_memory_info('CPU:0')
+    with self.assertRaisesRegex(ValueError, 'CPU does not support'):
+      config.get_memory_usage('CPU:0')
+
+  @reset_eager
+  def testGetMemoryInfoUnknownDevice(self):
+    with self.assertRaisesRegex(ValueError, 'Failed parsing device name'):
+      config.get_memory_info('unknown_device')
+    with self.assertRaisesRegex(ValueError, 'Failed parsing device name'):
+      config.get_memory_usage('unknown_device')
+
+  @test_util.run_gpu_only
+  @reset_eager
+  def testPeakMemoryUsage(self):
+    x1 = array_ops.zeros((1000, 1000))
+    peak1 = config.get_memory_info('GPU:0')['peak']
+    self.assertGreaterEqual(peak1, 4 * 1000 * 1000)
+    x2 = array_ops.ones((1000, 1000))
+    peak2 = config.get_memory_info('GPU:0')['peak']
+    self.assertGreaterEqual(peak2, peak1 + 4 * 1000 * 1000)
+    del x1, x2  # With CPython, causes tensor memory to be immediately freed
+    peak3 = config.get_memory_info('GPU:0')['peak']
+    self.assertGreaterEqual(peak3, peak2)
+    self.assertGreaterEqual(peak3, config.get_memory_info('GPU:0')['current'])
+
+  @test_util.run_gpu_only
+  @reset_eager
+  def testGetMemoryUsageAmbiguousDevice(self):
+    if len(config.list_physical_devices('GPU')) < 2:
+      self.skipTest('Need at least 2 GPUs')
+    with self.assertRaisesRegex(ValueError, 'Multiple devices'):
+      config.get_memory_usage('GPU')
+
+  @test_util.run_gpu_only
+  @reset_eager
   def testGpuInvalidConfig(self):
     gpus = config.list_physical_devices('GPU')
     self.assertNotEqual(len(gpus), 0)
@@ -760,17 +817,18 @@ class TensorFloat32Test(test.TestCase):
     super(TensorFloat32Test, self).tearDown()
     config.enable_tensor_float_32_execution(True)
 
-  def test_tf32_enabled(self):
+  def test_tensor_float_32_enabled(self):
     self.assertTrue(config.tensor_float_32_execution_enabled())
 
     x = array_ops.fill((8, 8), 1 + 2**-20)
     y = array_ops.ones((8, 8))
     out = math_ops.matmul(x, y)
-    # In tf32, each element of x is rounded to 1, so the output will be 8s.
+    # In TensorFloat-32, each element of x is rounded to 1, so the output will
+    # be 8s.
     expected = array_ops.fill((8, 8), 8)
     self.assertAllEqual(out, expected)
 
-  def test_tf32_disabled(self):
+  def test_tensor_float_32_disabled(self):
     self.assertTrue(config.tensor_float_32_execution_enabled())
     config.enable_tensor_float_32_execution(False)
     self.assertFalse(config.tensor_float_32_execution_enabled())

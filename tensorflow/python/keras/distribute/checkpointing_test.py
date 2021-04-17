@@ -13,19 +13,16 @@
 # limitations under the License.
 # ==============================================================================
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 
 from absl.testing import parameterized
 
-from tensorflow.python.distribute import combinations
+from tensorflow.python.distribute import combinations as ds_combinations
 from tensorflow.python.distribute import strategy_combinations
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import def_function
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import test_combinations as combinations
 from tensorflow.python.keras.optimizer_v2 import adam
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import variables as variables_lib
@@ -36,7 +33,7 @@ from tensorflow.python.training.tracking import util as trackable_utils
 
 class TrainingCheckpointTests(test.TestCase, parameterized.TestCase):
 
-  @combinations.generate(
+  @ds_combinations.generate(
       combinations.combine(
           distribution=[
               strategy_combinations.mirrored_strategy_with_one_cpu,
@@ -95,7 +92,7 @@ class TrainingCheckpointTests(test.TestCase, parameterized.TestCase):
           ValueError, "optimizer slot variable under the scope"):
         checkpoint.restore(save_path)
 
-  @combinations.generate(
+  @ds_combinations.generate(
       combinations.combine(
           distribution=[
               strategy_combinations.mirrored_strategy_with_one_cpu,

@@ -26,11 +26,16 @@ limitations under the License.
 #include "tensorflow/stream_executor/platform/port.h"
 #include "third_party/tensorrt/tensorrt_config.h"
 
+#if TENSORFLOW_USE_ROCM
+#include "rocm/rocm_config.h"
+#endif
+
 namespace stream_executor {
 namespace internal {
 
 namespace {
 string GetCudaVersion() { return TF_CUDA_VERSION; }
+string GetCudaRtVersion() { return TF_CUDART_VERSION; }
 string GetCudnnVersion() { return TF_CUDNN_VERSION; }
 string GetCublasVersion() { return TF_CUBLAS_VERSION; }
 string GetCusolverVersion() { return TF_CUSOLVER_VERSION; }
@@ -77,11 +82,15 @@ port::StatusOr<void*> GetCudaDriverDsoHandle() {
 }
 
 port::StatusOr<void*> GetCudaRuntimeDsoHandle() {
-  return GetDsoHandle("cudart", GetCudaVersion());
+  return GetDsoHandle("cudart", GetCudaRtVersion());
 }
 
 port::StatusOr<void*> GetCublasDsoHandle() {
   return GetDsoHandle("cublas", GetCublasVersion());
+}
+
+port::StatusOr<void*> GetCublasLtDsoHandle() {
+  return GetDsoHandle("cublasLt", GetCublasVersion());
 }
 
 port::StatusOr<void*> GetCufftDsoHandle() {
@@ -128,19 +137,27 @@ port::StatusOr<void*> GetMiopenDsoHandle() {
   return GetDsoHandle("MIOpen", "");
 }
 
-port::StatusOr<void*> GetRocfftDsoHandle() {
+port::StatusOr<void*> GetHipfftDsoHandle() {
+#if TF_ROCM_VERSION < 40100
   return GetDsoHandle("rocfft", "");
+#else
+  return GetDsoHandle("hipfft", "");
+#endif
 }
 
 port::StatusOr<void*> GetRocrandDsoHandle() {
   return GetDsoHandle("rocrand", "");
 }
 
+port::StatusOr<void*> GetRoctracerDsoHandle() {
+  return GetDsoHandle("roctracer64", "");
+}
+
 port::StatusOr<void*> GetHipsparseDsoHandle() {
   return GetDsoHandle("hipsparse", "");
 }
 
-port::StatusOr<void*> GetHipDsoHandle() { return GetDsoHandle("hip_hcc", ""); }
+port::StatusOr<void*> GetHipDsoHandle() { return GetDsoHandle("amdhip64", ""); }
 
 }  // namespace DsoLoader
 
@@ -157,6 +174,11 @@ port::StatusOr<void*> GetCudaRuntimeDsoHandle() {
 
 port::StatusOr<void*> GetCublasDsoHandle() {
   static auto result = new auto(DsoLoader::GetCublasDsoHandle());
+  return *result;
+}
+
+port::StatusOr<void*> GetCublasLtDsoHandle() {
+  static auto result = new auto(DsoLoader::GetCublasLtDsoHandle());
   return *result;
 }
 
@@ -200,13 +222,18 @@ port::StatusOr<void*> GetMiopenDsoHandle() {
   return *result;
 }
 
-port::StatusOr<void*> GetRocfftDsoHandle() {
-  static auto result = new auto(DsoLoader::GetRocfftDsoHandle());
+port::StatusOr<void*> GetHipfftDsoHandle() {
+  static auto result = new auto(DsoLoader::GetHipfftDsoHandle());
   return *result;
 }
 
 port::StatusOr<void*> GetRocrandDsoHandle() {
   static auto result = new auto(DsoLoader::GetRocrandDsoHandle());
+  return *result;
+}
+
+port::StatusOr<void*> GetRoctracerDsoHandle() {
+  static auto result = new auto(DsoLoader::GetRoctracerDsoHandle());
   return *result;
 }
 

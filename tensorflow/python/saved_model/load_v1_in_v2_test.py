@@ -45,6 +45,7 @@ from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables
+from tensorflow.python.ops.ragged import ragged_factory_ops
 from tensorflow.python.saved_model import builder_impl
 from tensorflow.python.saved_model import load
 from tensorflow.python.saved_model import save
@@ -122,6 +123,7 @@ class LoadTest(test.TestCase):
     imported = load.load(saved)
     fn = imported.signatures["serving_default"]
     self.evaluate(lookup_ops.tables_initializer())
+    self.evaluate(ops.get_collection("saved_model_initializers"))
     self.assertEqual(
         6., self.evaluate(fn(start=constant_op.constant(2.))["output"]))
 
@@ -566,6 +568,25 @@ class LoadTest(test.TestCase):
         start_dense_shape=dense_shape)
     self.assertAllEqual([84, 86, 88], result["output"].values.numpy())
 
+  def _model_with_ragged_input(self):
+    """Generate a graph with a RaggedTensor input and serialize in V1 format."""
+    export_graph = ops.Graph()
+    with export_graph.as_default():
+      x = ragged_factory_ops.placeholder(dtypes.float32, 1, [])
+      y = x * 2
+      with session_lib.Session() as sess:
+        path = os.path.join(self.get_temp_dir(), "saved_model", str(ops.uid()))
+        simple_save.simple_save(sess, path, inputs={"x": x}, outputs={"y": y})
+    return path
+
+  def test_load_ragged_inputs(self):
+    path = self._model_with_ragged_input()
+    imported = load.load(path)
+    imported_fn = imported.signatures["serving_default"]
+    x = ragged_factory_ops.constant([[10., 20.], [30.]])
+    result = imported_fn(x_component_0=x.values, x_component_1=x.row_splits)
+    self.assertAllEqual(result["y"], [[20., 40.], [60.]])
+
   def _model_with_defun(self):
     """Generate a graph with a Defun and serialize in V1 format."""
     export_graph = ops.Graph()
@@ -639,6 +660,41 @@ class LoadTest(test.TestCase):
     self.assertEqual(args, ())
     self.assertAllEqual(
         kwargs, {"start": tensor_spec.TensorSpec(shape=None, name="start")})
+
+  def _v1_multi_input_saved_model(self):
+    export_graph = ops.Graph()
+    with export_graph.as_default():
+      input1 = array_ops.placeholder(
+          shape=[None], dtype=dtypes.float32, name="input1")
+      input2 = array_ops.placeholder(
+          shape=[None], dtype=dtypes.float32, name="input2")
+      v = resource_variable_ops.ResourceVariable(21.)
+      output = array_ops.identity(input1 * v + input2, name="output")
+      with session_lib.Session() as session:
+        session.run(v.initializer)
+        path = os.path.join(self.get_temp_dir(), "saved_model", str(ops.uid()))
+        builder = builder_impl.SavedModelBuilder(path)
+        builder.add_meta_graph_and_variables(
+            session,
+            tags=[tag_constants.SERVING],
+            signature_def_map={
+                "serving_default":
+                    signature_def_utils.build_signature_def(
+                        {
+                            "input1": utils_impl.build_tensor_info(input1),
+                            "input2": utils_impl.build_tensor_info(input2)
+                        }, {"output": utils_impl.build_tensor_info(output)})
+            })
+        builder.save()
+    return path
+
+  def test_v1_input_ordered(self):
+    path = self._v1_multi_input_saved_model()
+    imported = load.load(path)
+    self.assertEqual(imported.signatures["serving_default"].inputs[0].name,
+                     "input1:0")
+    self.assertEqual(imported.signatures["serving_default"].inputs[1].name,
+                     "input2:0")
 
 
 if __name__ == "__main__":

@@ -15,11 +15,13 @@ limitations under the License.
 
 #include "mlir-hlo/Dialect/mhlo/IR/chlo_ops.h"
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
+#include "mlir-hlo/Dialect/mhlo/transforms/PassDetail.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/passes.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/Shape/IR/Shape.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir {
@@ -27,28 +29,41 @@ namespace mhlo {
 
 namespace {
 
-struct TestChloLegalizeToHloPass
-    : public PassWrapper<TestChloLegalizeToHloPass, FunctionPass> {
+struct ChloLegalizeToHloPass
+    : public ChloLegalizeToHloPassBase<ChloLegalizeToHloPass> {
+  explicit ChloLegalizeToHloPass(bool broadcast_only)
+      : ChloLegalizeToHloPassBase<
+            ChloLegalizeToHloPass>::ChloLegalizeToHloPassBase() {
+    this->broadcast_only_ = broadcast_only;
+  }
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<mhlo::MhloDialect, shape::ShapeDialect, scf::SCFDialect>();
   }
 
   void runOnFunction() override {
     ConversionTarget conversionTarget(getContext());
-    OwningRewritePatternList conversionPatterns;
-
+    OwningRewritePatternList conversionPatterns(&getContext());
     conversionTarget.addIllegalDialect<chlo::HloClientDialect>();
-    // Consider the mhlo dialect legal for tests.
-    conversionTarget.addLegalDialect<mhlo::MhloDialect>();
-    // The conversion uses helpers from the Standard dialect.
-    conversionTarget.addLegalDialect<mlir::StandardOpsDialect>();
-    conversionTarget.addLegalDialect<mlir::shape::ShapeDialect>();
-    conversionTarget.addLegalDialect<mlir::scf::SCFDialect>();
 
-    chlo::PopulateLegalizeChloToHloPatterns(&getContext(), &conversionPatterns);
+    // Consider the mhlo dialect legal for tests. Also add helper dialects
+    // that are needed by the patterns.
+    conversionTarget.addLegalDialect<
+        MhloDialect, mlir::StandardOpsDialect, mlir::tensor::TensorDialect,
+        mlir::shape::ShapeDialect, mlir::scf::SCFDialect>();
+    conversionTarget.addLegalOp<chlo::MinimumBroadcastShapesOp>();
 
-    if (failed(applyPartialConversion(getFunction(), conversionTarget,
-                                      conversionPatterns))) {
+    if (broadcast_only_) {
+      chlo::PopulateChloBroadcastingPatterns(&getContext(),
+                                             &conversionPatterns);
+      conversionTarget.addLegalOp<chlo::ZetaOp, chlo::PolygammaOp>();
+    } else {
+      chlo::PopulateLegalizeChloToHloPatterns(&getContext(),
+                                              &conversionPatterns);
+    }
+
+    if (failed(applyPartialConversion(getOperation(), conversionTarget,
+                                      std::move(conversionPatterns)))) {
       return signalPassFailure();
     }
   }
@@ -56,10 +71,9 @@ struct TestChloLegalizeToHloPass
 
 }  // namespace
 
-std::unique_ptr<FunctionPass> createTestChloLegalizeToHloPass() {
-  return std::make_unique<TestChloLegalizeToHloPass>();
+std::unique_ptr<FunctionPass> createChloLegalizeToHloPass(bool broadcast_only) {
+  return std::make_unique<ChloLegalizeToHloPass>(broadcast_only);
 }
 
 }  // namespace mhlo
 }  // namespace mlir
-

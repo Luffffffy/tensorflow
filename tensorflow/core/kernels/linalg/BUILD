@@ -1,21 +1,30 @@
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "if_cuda_or_rocm",
-    "tf_kernel_library",
 )
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
 load(
     "@local_config_rocm//rocm:build_defs.bzl",
     "if_rocm",
 )
+
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "filegroup")
+
+# buildifier: disable=same-origin-load
 load("//tensorflow:tensorflow.bzl", "tf_cuda_cc_test")
+
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "tf_kernel_library")
 
 package(
     default_visibility = [
         "//tensorflow:__subpackages__",
         "//tensorflow:internal",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    features = ["-layering_check"],
+    licenses = ["notice"],
 )
 
 # TODO(rmlarsen): Remove ASAP.
@@ -26,6 +35,8 @@ package_group(
 
 # Export a few files for use on Android.
 exports_files([
+    "cholesky_op.cc",
+    "determinant_op.cc",
     "einsum_op_impl_half.cc",
     "einsum_op_impl_bfloat16.cc",
     "einsum_op_impl_int32.cc",
@@ -38,11 +49,16 @@ exports_files([
     "einsum_op.h",
     "linalg_ops_common.h",
     "linalg_ops_common.cc",
+    "matrix_band_part_op.h",
+    "matrix_band_part_op.cc",
     "matrix_diag_op.h",
     "matrix_diag_op.cc",
     "matrix_inverse_op.cc",
     "matrix_set_diag_op.h",
     "matrix_set_diag_op.cc",
+    "matrix_triangular_solve_op_complex.cc",
+    "matrix_triangular_solve_op_impl.h",
+    "matrix_triangular_solve_op_real.cc",
 ])
 
 # Public support libraries ----------------------------------------------------
@@ -204,7 +220,7 @@ tf_kernel_library(
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core/kernels:fill_functor",
-        "//tensorflow/core:stream_executor",
+        "//tensorflow/core/platform:stream_executor",
     ] + if_cuda([
         "//tensorflow/core/platform/default/build_config:cublas_plugin",
         "//tensorflow/core/util:cuda_solvers",

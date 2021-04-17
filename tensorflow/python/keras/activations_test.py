@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for Keras activation functions."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
@@ -65,8 +61,15 @@ class KerasActivationsTest(test.TestCase, parameterized.TestCase):
     activation = advanced_activations.LeakyReLU(alpha=0.1)
     layer = core.Dense(3, activation=activation)
     config = serialization.serialize(layer)
+    # with custom objects
     deserialized_layer = serialization.deserialize(
         config, custom_objects={'LeakyReLU': activation})
+    self.assertEqual(deserialized_layer.__class__.__name__,
+                     layer.__class__.__name__)
+    self.assertEqual(deserialized_layer.activation.__class__.__name__,
+                     activation.__class__.__name__)
+    # without custom objects
+    deserialized_layer = serialization.deserialize(config)
     self.assertEqual(deserialized_layer.__class__.__name__,
                      layer.__class__.__name__)
     self.assertEqual(deserialized_layer.activation.__class__.__name__,
@@ -84,6 +87,26 @@ class KerasActivationsTest(test.TestCase, parameterized.TestCase):
     x = backend.placeholder(ndim=1)
     with self.assertRaises(ValueError):
       activations.softmax(x)
+
+  def test_softmax_2d_axis_0(self):
+    x = backend.placeholder(ndim=2)
+    f = backend.function([x], [activations.softmax(x, axis=0)])
+    test_values = np.random.random((2, 5))
+    result = f([test_values])[0]
+    expected = np.zeros((2, 5))
+    for i in range(5):
+      expected[:, i] = _ref_softmax(test_values[:, i])
+    self.assertAllClose(result, expected, rtol=1e-05)
+
+  def test_softmax_3d_axis_tuple(self):
+    x = backend.placeholder(ndim=3)
+    f = backend.function([x], [activations.softmax(x, axis=(1, 2))])
+    test_values = np.random.random((2, 3, 5))
+    result = f([test_values])[0]
+    expected = np.zeros((2, 3, 5))
+    for i in range(2):
+      expected[i, :, :] = _ref_softmax(test_values[i, :, :])
+    self.assertAllClose(result, expected, rtol=1e-05)
 
   def test_temporal_softmax(self):
     x = backend.placeholder(shape=(2, 2, 3))

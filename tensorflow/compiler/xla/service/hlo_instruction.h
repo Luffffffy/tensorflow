@@ -69,23 +69,28 @@ string PrintName(const string& name, bool print_ids);
 class HloPrintOptions {
  public:
   enum class PrintSubcomputationMode {
-    kOff,         // Do not print anything about subcomputations.
-    kNameOnly,    // Only print the name of subcomputations.
-    kFullBodies,  // Print the full bodies of subcomputations.
+    kOff,                  // Do not print anything about subcomputations.
+    kNameOnly,             // Only print the name of subcomputations.
+    kFullBodies,           // Print the full bodies of subcomputations.
+    kNonSequentialBodies,  // Print the full bodies of subcomputations that are
+                           // not in a sequential context.
   };
 
   // Constructs the default print options: don't print large constants, don't
   // compact operands, no indentation.
   HloPrintOptions()
       : print_large_constants_(false),
+        print_only_essential_constants_(false),
         print_subcomputation_mode_(PrintSubcomputationMode::kNameOnly),
         print_metadata_(true),
         print_backend_config_(true),
+        print_infeed_outfeed_config_(true),
         compact_operands_(false),
         include_layout_in_shapes_(true),
         print_result_shape_(true),
         print_operand_shape_(true),
         print_operand_names_(true),
+        print_operand_index_annotation_interval_(5),
         print_program_shape_(true),
         print_percent_(true),
         print_control_dependencies_(true),
@@ -103,6 +108,7 @@ class HloPrintOptions {
         .set_print_metadata(false)
         .set_print_backend_config(false)
         .set_print_operand_shape(false)
+        .set_print_operand_index_annotation_interval(0)
         .set_print_program_shape(false)
         .set_print_percent(false)
         .set_print_control_dependencies(false);
@@ -118,6 +124,7 @@ class HloPrintOptions {
         .set_compact_operands(false)
         .set_print_operand_names(false)
         .set_print_operand_shape(true)
+        .set_print_operand_index_annotation_interval(0)
         .set_print_program_shape(false)
         .set_print_percent(false)
         .set_print_control_dependencies(false)
@@ -127,12 +134,16 @@ class HloPrintOptions {
   // Options to produce a fingerprint of an HLO.
   static HloPrintOptions Fingerprint() {
     return HloPrintOptions()
-        .set_print_subcomputation_mode(PrintSubcomputationMode::kFullBodies)
+        .set_print_subcomputation_mode(
+            PrintSubcomputationMode::kNonSequentialBodies)
         .set_print_metadata(false)
         .set_print_backend_config(false)
+        .set_print_infeed_outfeed_config(false)
+        .set_print_only_essential_constants(true)
         .set_compact_operands(true)
         .set_print_operand_names(false)
         .set_print_operand_shape(true)
+        .set_print_operand_index_annotation_interval(0)
         .set_print_program_shape(false)
         .set_print_percent(false)
         .set_print_control_dependencies(false)
@@ -144,6 +155,12 @@ class HloPrintOptions {
   // If true, large constants will be printed out.
   HloPrintOptions& set_print_large_constants(bool value) {
     print_large_constants_ = value;
+    return *this;
+  }
+
+  // If true, only integer, all-zero, are all-one constants will be printed out.
+  HloPrintOptions& set_print_only_essential_constants(bool value) {
+    print_only_essential_constants_ = value;
     return *this;
   }
 
@@ -165,6 +182,12 @@ class HloPrintOptions {
     return *this;
   }
 
+  // If true, infeed_config and outfeed_config will be printed.
+  HloPrintOptions& set_print_infeed_outfeed_config(bool value) {
+    print_infeed_outfeed_config_ = value;
+    return *this;
+  }
+
   // If true, result shapes will be printed.
   HloPrintOptions& set_print_result_shape(bool value) {
     print_result_shape_ = value;
@@ -174,6 +197,12 @@ class HloPrintOptions {
   // If true, operands' shapes will be printed.
   HloPrintOptions& set_print_operand_shape(bool value) {
     print_operand_shape_ = value;
+    return *this;
+  }
+
+  // If true, operands' shapes will be printed.
+  HloPrintOptions& set_print_operand_index_annotation_interval(int64 value) {
+    print_operand_index_annotation_interval_ = value;
     return *this;
   }
 
@@ -293,16 +322,25 @@ class HloPrintOptions {
   }
 
   bool print_large_constants() const { return print_large_constants_; }
+  bool print_only_essential_constants() const {
+    return print_only_essential_constants_;
+  }
   PrintSubcomputationMode print_subcomputation_mode() const {
     return print_subcomputation_mode_;
   }
   bool print_metadata() const { return print_metadata_; }
   bool print_backend_config() const { return print_backend_config_; }
+  bool print_infeed_outfeed_config() const {
+    return print_infeed_outfeed_config_;
+  }
   bool compact_operands() const { return compact_operands_; }
   bool include_layout_in_shapes() const { return include_layout_in_shapes_; }
   bool print_result_shape() const { return print_result_shape_; }
   bool print_operand_shape() const { return print_operand_shape_; }
   bool print_operand_names() const { return print_operand_names_; }
+  int64 print_operand_index_annotation_interval() const {
+    return print_operand_index_annotation_interval_;
+  }
   bool print_ids() const { return print_ids_; }
   bool print_program_shape() const { return print_program_shape_; }
   bool print_percent() const { return print_percent_; }
@@ -333,14 +371,19 @@ class HloPrintOptions {
 
  private:
   bool print_large_constants_;
+  bool print_only_essential_constants_;
   PrintSubcomputationMode print_subcomputation_mode_;
   bool print_metadata_;
   bool print_backend_config_;
+  bool print_infeed_outfeed_config_;
   bool compact_operands_;
   bool include_layout_in_shapes_;
   bool print_result_shape_;
   bool print_operand_shape_;
   bool print_operand_names_;
+  // The interval between the /*index=*/ annotated operands. 0 means never print
+  // the annotation, 1 means print annotation for every operand.
+  int64 print_operand_index_annotation_interval_;
   bool print_program_shape_;
   bool print_percent_;
   bool print_control_dependencies_;
@@ -497,7 +540,7 @@ class HloInstruction {
   static StatusOr<std::unique_ptr<HloInstruction>> CreateFromProto(
       const HloInstructionProto& proto,
       const absl::flat_hash_map<int64, HloInstruction*>& instruction_map,
-      const absl::flat_hash_map<int64, HloComputation*>& computation_map,
+      const absl::flat_hash_map<int64, HloComputation*>& computation_map = {},
       bool prohibit_empty_literal = true);
 
   // Creates a parameter-retrieving instruction.
@@ -631,7 +674,8 @@ class HloInstruction {
   // except that the order of the group members determines the concatenation
   // order of inputs from different participants.
   static std::unique_ptr<HloInstruction> CreateAllGather(
-      const Shape& shape, HloInstruction* operand, int64 all_gather_dimension,
+      const Shape& shape, absl::Span<HloInstruction* const> operands,
+      int64 all_gather_dimension,
       const std::vector<ReplicaGroup>& replica_groups, bool constrain_layout,
       const absl::optional<int64>& channel_id, bool use_global_device_ids);
 
@@ -706,10 +750,12 @@ class HloInstruction {
       const absl::optional<int64>& channel_id);
 
   // Creates an instruction that returns a U32 replica ID.
-  static std::unique_ptr<HloInstruction> CreateReplicaId();
+  static std::unique_ptr<HloInstruction> CreateReplicaId(
+      const Shape& shape = ShapeUtil::MakeShape(U32, {}));
 
   // Creates an instruction that returns a U32 partition ID.
-  static std::unique_ptr<HloInstruction> CreatePartitionId();
+  static std::unique_ptr<HloInstruction> CreatePartitionId(
+      const Shape& shape = ShapeUtil::MakeShape(U32, {}));
 
   // Creates a conversion instruction, where operand is the data to convert and
   // shape is the target shape for the conversion.
@@ -829,6 +875,16 @@ class HloInstruction {
   static std::unique_ptr<HloInstruction> CreateReduceWindow(
       const Shape& shape, HloInstruction* operand, HloInstruction* init_value,
       const Window& window, HloComputation* reduce_computation);
+
+  // A more general, multiple-argument version of the above.
+  // The reduce_computation being applied,now takes N arguments:
+  // [accumulator0, accumulator1, ..., accumulatorN, value0, value1, ...,
+  // valueN], and returns an N-tuple. The operands and init_values now each
+  // contain a span of N input arrays and n initial values.
+  static std::unique_ptr<HloInstruction> CreateReduceWindow(
+      const Shape& shape, absl::Span<HloInstruction* const> operands,
+      absl::Span<HloInstruction* const> init_values, const Window& window,
+      HloComputation* reduce_computation);
 
   // Creates a batch-norm-training instruction.
   static std::unique_ptr<HloInstruction> CreateBatchNormTraining(
@@ -973,11 +1029,18 @@ class HloInstruction {
       const Shape& shape, absl::Span<HloInstruction* const> operands,
       absl::string_view custom_call_target, string opaque = "");
 
-  // Overload with a to_apply computation
+  // Overload with a to_apply computation.
   static std::unique_ptr<HloInstruction> CreateCustomCall(
       const Shape& shape, absl::Span<HloInstruction* const> operands,
       HloComputation* to_apply, absl::string_view custom_call_target,
       string opaque = "");
+
+  // Overload with multiple computations. The called computations can have
+  // different function signatures.
+  static std::unique_ptr<HloInstruction> CreateCustomCall(
+      const Shape& shape, absl::Span<HloInstruction* const> operands,
+      absl::Span<HloComputation* const> called_computations,
+      absl::string_view custom_call_target, string opaque = "");
 
   // Overload which constrains the layouts of the operand and result. 'shape'
   // and 'operand_shapes_with_layout' must have layouts.
@@ -1024,6 +1087,7 @@ class HloInstruction {
 
   // Returns the opcode for this instruction.
   HloOpcode opcode() const { return opcode_; }
+  HloOpcode* mutable_opcode() { return &opcode_; }
 
   // Returns true if this instruction has a side effect, irrespective of whether
   // any called computations may contain an instruction with side effects.
@@ -1122,41 +1186,23 @@ class HloInstruction {
       const std::function<bool(const HloComputation*, const HloComputation*)>&
           eq_computations = std::equal_to<const HloComputation*>(),
       bool layout_sensitive = true) const {
-    // An instruction is always identical to itself.
-    if (this == &other) {
-      return true;
-    }
+    return IdenticalInternal(other, eq_operands, eq_computations,
+                             layout_sensitive,
+                             /*ignore_channel_id_values=*/false);
+  }
 
-    // Identical instruction must have the same opcode, shape, and identical
-    // operands.
-    if (opcode() != other.opcode()) {
-      return false;
-    }
-    if (!(layout_sensitive ? ShapeUtil::Equal(shape(), other.shape())
-                           : ShapeUtil::Compatible(shape(), other.shape()))) {
-      return false;
-    }
-    if (operands().size() != other.operands().size()) {
-      return false;
-    }
-
-    // Two AllReduces are Identical if they have the same channel_id.
-    // Their operands don't have to be Identical.
-    if (!IsCrossModuleAllReduce()) {
-      // Use an explicit loop rather than ContainerEquals, because copying
-      // around std::functions may be too expensive in some cases.
-      for (size_t i = 0; i < operands().size(); ++i) {
-        if (!eq_operands(operand(i), other.operand(i))) {
-          return false;
-        }
-      }
-    }
-
-    if (backend_config_ != other.backend_config_) {
-      return false;
-    }
-
-    return IdenticalSlowPath(other, eq_computations);
+  // Same as Identical() but ignores channel ID value mismatches, as long as
+  // both have channel IDs or neither has a channel ID.
+  bool IdenticalIgnoringChannelIdValues(
+      const HloInstruction& other,
+      const std::function<bool(const HloInstruction*, const HloInstruction*)>&
+          eq_operands = std::equal_to<const HloInstruction*>(),
+      const std::function<bool(const HloComputation*, const HloComputation*)>&
+          eq_computations = std::equal_to<const HloComputation*>(),
+      bool layout_sensitive = true) const {
+    return IdenticalInternal(other, eq_operands, eq_computations,
+                             layout_sensitive,
+                             /*ignore_channel_id_values=*/true);
   }
 
   // Generates a hash value of an HLO instruction. Hash considers
@@ -1374,6 +1420,8 @@ class HloInstruction {
   // instruction.
   bool IsFusible() const;
 
+  bool IsCustomCall(absl::string_view target) const;
+
   // Returns the sharding applied to this operator.
   // REQUIRES: has_sharding() is true.
   const HloSharding& sharding() const {
@@ -1467,7 +1515,7 @@ class HloInstruction {
   // clearing out the computations, we reflect the fact that all side-effecting
   // properties have been reflected in the caller, and make the call HLO
   // removable.
-  void ClearCalledComputations() { called_computations_.clear(); }
+  virtual void ClearCalledComputations() { called_computations_.clear(); }
 
   // Returns true if this instruction performs an elementwise operation on
   // `operand_idx`-th operand. An instruction is elementwise on an operand iff,
@@ -1481,6 +1529,8 @@ class HloInstruction {
 
   // Returns true if this instruction is elementwise on all its operands.
   bool IsElementwise() const;
+
+  static bool IsOpElementwise(HloOpcode opcode);
 
   // Returns true if this is a cross module all-reduce instruction.
   bool IsCrossModuleAllReduce() const;
@@ -1596,8 +1646,22 @@ class HloInstruction {
   const PrecisionConfig& precision_config() const;
   PrecisionConfig* mutable_precision_config();
 
-  // Sets the debug metadata for this instruction.
-  void set_metadata(const OpMetadata& metadata) { metadata_ = metadata; }
+  // Sets the debug metadata for this instruction, excluding creation_pass_id,
+  // which should never be copied anywhere.
+  void set_metadata(const OpMetadata& metadata) {
+    int64 creation_pass_id = metadata_.creation_pass_id();
+    metadata_ = metadata;
+    metadata_.set_creation_pass_id(creation_pass_id);
+  }
+  void set_creation_pass_id(int64 pass_id) {
+    metadata_.set_creation_pass_id(pass_id);
+  }
+  void set_metadata_op_name(const std::string& name) {
+    metadata_.set_op_name(name);
+  }
+  void set_logical_creation_pass_id(int64 pass_id) {
+    metadata_.set_logical_creation_pass_id(pass_id);
+  }
   const OpMetadata& metadata() const { return metadata_; }
 
   // Set/get the computation containing this instruction. set_parent should only
@@ -1787,6 +1851,9 @@ class HloInstruction {
   // Returns the shape for the Outfeed instruction.
   const Shape& outfeed_shape() const;
 
+  // Returns the mutable shape for the Outfeed instruction.
+  Shape* mutable_outfeed_shape();
+
   // Delegates to HloCollectiveInstruction::replica_groups.
   const std::vector<ReplicaGroup>& replica_groups() const;
 
@@ -1847,6 +1914,9 @@ class HloInstruction {
   // Delegates to HloPadInstruction::padding_config.
   const PaddingConfig& padding_config() const;
   PaddingConfig* mutable_padding_config();
+
+  // Delegates to HloConvolutionInstruction::padding_type.
+  PaddingType padding_type() const;
 
   // Delegates to HloDynamicSliceInstruction::slice_sizes.
   int64 slice_sizes(int64 dimension) const;
@@ -1926,6 +1996,8 @@ class HloInstruction {
   // by factory methods.
   HloInstruction(HloOpcode opcode, const Shape& shape);
 
+  void RemoveAllOperands() { operands_.clear(); }
+
   void RemoveOperandAt(int index) {
     operands_.erase(operands_.begin() + index);
   }
@@ -1961,6 +2033,14 @@ class HloInstruction {
 
  private:
   friend class HloComputation;
+
+  bool IdenticalInternal(
+      const HloInstruction& other,
+      const std::function<bool(const HloInstruction*, const HloInstruction*)>&
+          eq_operands,
+      const std::function<bool(const HloComputation*, const HloComputation*)>&
+          eq_computations,
+      bool layout_sensitive, bool ignore_channel_id_values) const;
 
   // Implementation for non-common logic of CloneWithNewOperands.
   virtual std::unique_ptr<HloInstruction> CloneWithNewOperandsImpl(
@@ -2127,7 +2207,6 @@ StatusOr<HloInstruction::FusionKind> StringToFusionKind(
 string PaddingConfigToString(const PaddingConfig& padding);
 string FrontendAttributesToString(
     const FrontendAttributes& frontend_attributes);
-string OpMetadataToString(const OpMetadata& metadata);
 string RandomAlgorithmToString(const RandomAlgorithm& algorithm);
 string RandomDistributionToString(const RandomDistribution& distribution);
 string PrecisionToString(const PrecisionConfig::Precision& precision);

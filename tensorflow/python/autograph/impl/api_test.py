@@ -45,7 +45,9 @@ from tensorflow.python.autograph.utils import ag_logging
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.eager import def_function
 from tensorflow.python.eager import function
+from tensorflow.python.framework import _errors_test_helper
 from tensorflow.python.framework import constant_op
+from tensorflow.python.framework import errors as tf_errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import math_ops
@@ -1193,6 +1195,31 @@ class ApiTest(test.TestCase):
 
     test_fn(ag_ctx.ControlStatusCtx(status=ag_ctx.Status.DISABLED))
 
+  def test_tf_convert_tf_decorator_allowlist_method(self):
+
+    def wrap(f):
+
+      def wrapper(*args, **kwargs):
+        return wrapper.__wrapped__(*args, **kwargs)
+
+      return tf_decorator.make_decorator(f, wrapper)
+
+    class TestClass(object):
+
+      @wrap
+      def method(self):
+        return converter_testing.is_inside_generated_code()
+
+    converter_testing.allowlist(TestClass.method)
+
+    obj = TestClass()
+    # It's intended that tf_convert modifies the original method in this case.
+    # This is not desirable, but options are limited.
+    converted = api.tf_convert(
+        obj.method, ag_ctx.ControlStatusCtx(status=ag_ctx.Status.ENABLED))
+    self.assertTrue(converted())
+    self.assertTrue(obj.method())
+
   def test_super_with_one_arg(self):
     test_case_self = self
 
@@ -1234,6 +1261,35 @@ class ApiTest(test.TestCase):
     tc = api.converted_call(TestSubclass, (), None, options=DEFAULT_RECURSIVE)
 
     self.assertEqual(5, tc.two_args(2))
+
+  def test_raise_from_func_graph(self):
+
+    @def_function.function
+    def raise_from_tf_function(n):
+      _errors_test_helper.TestRaiseFromStatus(n)
+
+    for code, expected_exception in [
+        (1, tf_errors.CancelledError),
+        (2, tf_errors.UnknownError),
+        (3, tf_errors.InvalidArgumentError),
+        (4, tf_errors.DeadlineExceededError),
+        (5, tf_errors.NotFoundError),
+        (6, tf_errors.AlreadyExistsError),
+        (7, tf_errors.PermissionDeniedError),
+        (16, tf_errors.UnauthenticatedError),
+        (8, tf_errors.ResourceExhaustedError),
+        (9, tf_errors.FailedPreconditionError),
+        (10, tf_errors.AbortedError),
+        (11, tf_errors.OutOfRangeError),
+        (12, tf_errors.UnimplementedError),
+        (13, tf_errors.InternalError),
+        (14, tf_errors.UnavailableError),
+        (15, tf_errors.DataLossError),
+    ]:
+      with self.assertRaises(expected_exception) as error:
+        raise_from_tf_function(code)
+      self.assertEqual(error.exception.experimental_payloads['key1'], 'value1')
+      self.assertEqual(error.exception.experimental_payloads['key2'], 'value2')
 
 
 if __name__ == '__main__':

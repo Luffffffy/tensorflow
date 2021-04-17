@@ -304,8 +304,8 @@ class AllOfPattern {
   void DescribeToImpl(std::ostream* os, std::integral_constant<size_t, index>,
                       int64 indent) const {
     constexpr bool first_is_trivial =
-        IsTrivialMatcher<typename std::remove_reference<decltype(
-            std::get<0>(patterns_))>::type>::value;
+        IsTrivialMatcher<typename std::remove_reference<decltype(std::get<0>(
+            patterns_))>::type>::value;
     constexpr bool is_last = index == sizeof...(Patterns) - 1;
     const auto& submatcher = std::get<index>(patterns_);
 
@@ -2087,7 +2087,6 @@ XLA_COMMUTATIVE_BINOP_PATTERN(Multiply)
 XLA_BINOP_PATTERN(Outfeed)
 XLA_BINOP_PATTERN(Pad)
 XLA_BINOP_PATTERN(Power)
-XLA_BINOP_PATTERN(ReduceWindow)
 XLA_BINOP_PATTERN(Remainder)
 XLA_BINOP_PATTERN(Send)
 XLA_BINOP_PATTERN(Subtract)
@@ -2125,6 +2124,7 @@ XLA_BINOP_PATTERN(ShiftRightLogical)
 XLA_TERNOP_PATTERN(Clamp);
 XLA_TERNOP_PATTERN(Scatter);
 XLA_TERNOP_PATTERN(Select);
+XLA_TERNOP_PATTERN(SelectAndScatter);
 #undef XLA_TERNOP_PATTERN
 
 namespace detail {
@@ -2165,11 +2165,13 @@ inline auto WithOperands(Matcher&& m, int64 operand_num, FirstArg&& first_arg,
 // already-bad compile errors even worse.
 XLA_VARIADIC_OP_PATTERN(AfterAll);
 XLA_VARIADIC_OP_PATTERN(Concatenate);
+XLA_VARIADIC_OP_PATTERN(Conditional);
 XLA_VARIADIC_OP_PATTERN(CustomCall);
 XLA_VARIADIC_OP_PATTERN(DynamicSlice)
 XLA_VARIADIC_OP_PATTERN(Fusion);
 XLA_VARIADIC_OP_PATTERN(Map)
 XLA_VARIADIC_OP_PATTERN(Reduce);
+XLA_VARIADIC_OP_PATTERN(ReduceWindow)
 XLA_VARIADIC_OP_PATTERN(Sort);
 XLA_VARIADIC_OP_PATTERN(Tuple);
 

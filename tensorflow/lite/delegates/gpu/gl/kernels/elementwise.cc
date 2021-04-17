@@ -55,6 +55,9 @@ class ElementwiseOneArgument : public NodeShader {
       case OperationType::EXP:
         source = "value_0 = exp(value_0);";
         break;
+      case tflite::gpu::OperationType::FLOOR:
+        source = "value_0 = floor(value_0);";
+        break;
       case OperationType::HARD_SWISH:
         source =
             "value_0 *= clamp(value_0 / 6.0 + vec4(0.5), vec4(0.0), "
@@ -177,6 +180,12 @@ class ElementwiseTwoArguments : public NodeShader {
         source = "value_0 = $0/$1;";
         break;
       }
+      case tflite::gpu::OperationType::FLOOR_DIV:
+        source = "value_0 = floor($0 / $1);";
+        break;
+      case tflite::gpu::OperationType::FLOOR_MOD:
+        source = "value_0 = $0 - floor($0 / $1) * $1;";
+        break;
       case OperationType::MAXIMUM: {
         source = "value_0 = max($0, $1);";
         break;
@@ -225,12 +234,14 @@ std::unique_ptr<NodeShader> NewElementwiseNodeShader(
     OperationType operation_type) {
   switch (operation_type) {
     case OperationType::ABS:
-    case OperationType::COPY:
     case OperationType::COS:
+    case OperationType::COPY:
     case OperationType::ELU:
     case OperationType::EXP:
-    case OperationType::LOG:
+    case OperationType::FLOOR:
     case OperationType::HARD_SWISH:
+    case OperationType::LOG:
+    case OperationType::NEG:
     case OperationType::RSQRT:
     case OperationType::SIGMOID:
     case OperationType::SIN:
@@ -239,6 +250,8 @@ std::unique_ptr<NodeShader> NewElementwiseNodeShader(
     case OperationType::TANH:
       return absl::make_unique<ElementwiseOneArgument>(operation_type);
     case OperationType::DIV:
+    case OperationType::FLOOR_DIV:
+    case OperationType::FLOOR_MOD:
     case OperationType::MAXIMUM:
     case OperationType::MINIMUM:
     case OperationType::POW:

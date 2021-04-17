@@ -21,6 +21,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/data/name_utils.h"
 #include "tensorflow/core/kernels/data/parallel_map_dataset_op.h"
 #include "tensorflow/core/kernels/data/stats_utils.h"
+#include "tensorflow/core/kernels/ragged_tensor_variant.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/stringprintf.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
@@ -270,6 +271,12 @@ class ParseExampleDatasetOp : public UnaryDatasetOpKernel {
 
     int64 Cardinality() const override { return input_->Cardinality(); }
 
+    Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      inputs->push_back(input_);
+      return Status::OK();
+    }
+
     Status CheckExternalState() const override {
       return input_->CheckExternalState();
     }
@@ -513,8 +520,10 @@ class ParseExampleDatasetOp : public UnaryDatasetOpKernel {
         result.push_back(
             std::make_pair("deterministic", deterministic_ ? "true" : "false"));
         result.push_back(std::make_pair(
-            "parallelism",
-            strings::Printf("%lld", static_cast<long long>(parallelism))));
+            "parallelism", parallelism == -1
+                               ? kTraceInfoUnavailable
+                               : strings::Printf("%lld", static_cast<long long>(
+                                                             parallelism))));
         return result;
       }
 
@@ -594,17 +603,23 @@ class ParseExampleDatasetOp : public UnaryDatasetOpKernel {
                                   &result->return_values);
             },
             std::move(input_element));
+        auto node = model_node();
+        const bool collect_usage =
+            node && ctx->model() && ctx->model()->collect_resource_usage();
         // `ctx->runner()` may execute its logic synchronous so we wrap it in
         // `RecordStop` and `RecordStart` to prevent invalid nesting of
         // `RecordStart` calls.
         RecordStop(ctx.get());
-        (*ctx->runner())(
-            [this, ctx, fn = std::move(fn), done = std::move(done)]() {
-              RecordStart(ctx.get());
-              auto cleanup =
-                  gtl::MakeCleanup([this, ctx] { RecordStop(ctx.get()); });
-              done(fn());
-            });
+        (*ctx->runner())([node, collect_usage, fn = std::move(fn),
+                          done = std::move(done)]() {
+          if (collect_usage) {
+            node->record_start(EnvTime::NowNanos());
+          }
+          done(fn());
+          if (collect_usage) {
+            node->record_stop(EnvTime::NowNanos());
+          }
+        });
         RecordStart(ctx.get());
       }
 
@@ -672,12 +687,9 @@ class ParseExampleDatasetOp : public UnaryDatasetOpKernel {
         for (int d = 0; d < dataset()->ragged_keys_.size(); ++d) {
           int output_index =
               dataset()->key_to_output_index_.at(dataset()->ragged_keys_[d]);
-          (*output)[output_index] = Tensor(ctx->allocator({}), DT_VARIANT, {});
-          Tensor serialized_ragged =
-              Tensor(ctx->allocator({}), DT_VARIANT, {2});
-          auto serialized_ragged_t = serialized_ragged.vec<Variant>();
-          serialized_ragged_t(0) = example_result.ragged_splits[d];
-          serialized_ragged_t(1) = example_result.ragged_values[d];
+          RaggedTensorVariant serialized_ragged;
+          serialized_ragged.append_splits(example_result.ragged_splits[d]);
+          serialized_ragged.set_values(example_result.ragged_values[d]);
           (*output)[output_index] = Tensor(ctx->allocator({}), DT_VARIANT, {});
           Tensor& ragged_wrapper = (*output)[output_index];
           ragged_wrapper.scalar<Variant>()() = serialized_ragged;

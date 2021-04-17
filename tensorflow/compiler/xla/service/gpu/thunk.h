@@ -59,9 +59,12 @@ class Thunk {
     kKernel,
     kMemset32BitValue,
     kMemzero,
+    kNcclAllGather,
     kNcclAllReduce,
+    kNcclAllToAll,
     kOutfeed,
     kReplicaId,
+    kPartitionId,
     kSequential,
     kTriangularSolve,
     kTuple,
@@ -69,10 +72,6 @@ class Thunk {
   };
 
   struct ThunkInfo {
-    // Optional. It's only used by subclasses which haven't been migrated away
-    // from HloInstructions. Once the migration is done, Thunks should be fully
-    // serializable.
-    const HloInstruction* hlo_instruction = nullptr;
     absl::optional<int64> profile_index;
     std::string profile_annotation;
   };
@@ -88,8 +87,9 @@ class Thunk {
   Thunk(const Thunk&) = delete;
   Thunk& operator=(const Thunk&) = delete;
 
+  virtual std::string ToStringExtra(int indent) const { return ""; }
   Kind kind() const { return kind_; }
-  string profile_annotation() const { return profile_annotation_; }
+  std::string profile_annotation() const { return profile_annotation_; }
 
   // Prepares the thunk for execution on the given StreamExecutor.
   //
@@ -112,6 +112,8 @@ class Thunk {
     std::vector<std::function<void()>>* deferred_host_callbacks;  // never null
     const std::vector<GlobalDeviceId>* gpu_global_device_ids;     // may be null
     const NcclUniqueIdCallback* nccl_unique_id_callback;          // may be null
+
+    StatusOr<GlobalDeviceId> GetGlobalDeviceId() const;
   };
 
   // Execute the kernel for the thunk on the given stream. This method must be
@@ -120,6 +122,8 @@ class Thunk {
   //
   // Precondition: Initialize(stream->parent()) has been called.
   virtual Status ExecuteOnStream(const ExecuteParams& params) = 0;
+
+  static absl::string_view KindToString(Thunk::Kind kind);
 
  protected:
   absl::optional<int64> profile_index() const { return profile_index_; }
@@ -143,10 +147,21 @@ class Thunk {
 };
 
 // A sequence of thunks.
-using ThunkSequence = std::vector<std::unique_ptr<Thunk>>;
+class ThunkSequence : public std::vector<std::unique_ptr<Thunk>> {
+ public:
+  std::string ToString(int indent = 0,
+                       std::function<std::string(const Thunk*)>
+                           get_thunk_annotation = nullptr) const;
+};
 
-absl::string_view ThunkKindToString(Thunk::Kind);
 std::ostream& operator<<(std::ostream& os, Thunk::Kind kind);
+
+// A struct that defines a shaped slice, i.e., a BufferAllocation::Slice and its
+// shape.
+struct ShapedSlice {
+  BufferAllocation::Slice slice;
+  Shape shape;
+};
 
 }  // namespace gpu
 }  // namespace xla

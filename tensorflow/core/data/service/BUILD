@@ -1,3 +1,4 @@
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load("@com_github_grpc_grpc//bazel:cc_grpc_library.bzl", "cc_grpc_library")
 load(
     "//tensorflow/core/platform:build_config.bzl",
@@ -5,21 +6,28 @@ load(
     "tf_proto_library",
     "tf_protos_profiler_service",
 )
+
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "cc_header_only_library")
+
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "get_compatible_with_cloud")
+
+# buildifier: disable=same-origin-load
 load("//tensorflow:tensorflow.bzl", "tf_grpc_cc_dependency")
 load(
     "//tensorflow:tensorflow.bzl",
-    "cc_header_only_library",
     "tf_cc_test",
 )
+
+package_group(name = "data_transfer_visibility")
 
 package(
     default_visibility = [
         "//tensorflow:internal",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
-
-exports_files(["LICENSE"])
 
 tf_proto_library(
     name = "common_proto",
@@ -46,6 +54,10 @@ tf_proto_library(
     protodeps = tf_additional_all_protos() + [
         ":common_proto",
         "//tensorflow/core/data:dataset_proto",
+    ],
+    visibility = [
+        ":data_transfer_visibility",
+        "//tensorflow:internal",
     ],
 )
 
@@ -80,15 +92,15 @@ cc_library(
     ],
     deps = [
         ":credentials_factory",
+        ":data_transfer",
         ":dispatcher_cc_grpc_proto",
-        ":dispatcher_proto_cc",
         ":grpc_util",
         ":worker_cc_grpc_proto",
         ":worker_proto_cc",
         "//tensorflow/core:framework",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
-        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/platform:errors",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/types:optional",
         tf_grpc_cc_dependency(),
     ],
 )
@@ -118,6 +130,38 @@ tf_cc_test(
         "//tensorflow/core/kernels/data:dataset_test_base",
         tf_grpc_cc_dependency(),
     ] + tf_protos_profiler_service(),
+)
+
+cc_library(
+    name = "data_transfer",
+    srcs = ["data_transfer.cc"],
+    hdrs = ["data_transfer.h"],
+    visibility = [
+        ":data_transfer_visibility",
+    ],
+    deps = [
+        ":worker_proto_cc",
+        "//tensorflow/core:framework",
+        "//tensorflow/core/data:dataset_proto_cc",
+        "//tensorflow/core/platform:errors",
+        "//tensorflow/core/platform:mutex",
+        "//tensorflow/core/platform:status",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:optional",
+    ],
+)
+
+tf_cc_test(
+    name = "data_transfer_test",
+    srcs = ["data_transfer_test.cc"],
+    deps = [
+        ":data_transfer",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+    ],
 )
 
 cc_library(
@@ -152,6 +196,7 @@ tf_cc_test(
 cc_grpc_library(
     name = "dispatcher_cc_grpc_proto",
     srcs = [":dispatcher_proto"],
+    compatible_with = get_compatible_with_cloud(),
     generate_mocks = True,
     grpc_only = True,
     deps = [":dispatcher_proto_cc"],
@@ -172,6 +217,7 @@ cc_library(
         ":dispatcher_state",
         ":grpc_util",
         ":journal",
+        ":task_remover",
         ":worker_cc_grpc_proto",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_internal",
@@ -179,7 +225,9 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/data:standalone",
         "//tensorflow/core/kernels/data:dataset_utils",
+        "//tensorflow/core/kernels/data:hash_utils",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/memory",
         tf_grpc_cc_dependency(),
@@ -319,6 +367,15 @@ cc_library(
 )
 
 cc_library(
+    name = "py_utils",
+    srcs = ["py_utils.cc"],
+    hdrs = ["py_utils.h"],
+    deps = [
+        ":credentials_factory",
+    ],
+)
+
+cc_library(
     name = "server_lib",
     srcs = ["server_lib.cc"],
     hdrs = ["server_lib.h"],
@@ -328,6 +385,7 @@ cc_library(
     ],
     deps = [
         ":credentials_factory",
+        ":data_transfer",
         ":grpc_dispatcher_impl",
         ":grpc_util",
         ":grpc_worker_impl",
@@ -351,6 +409,62 @@ cc_header_only_library(
 )
 
 cc_library(
+    name = "split_provider",
+    srcs = ["split_provider.cc"],
+    hdrs = [
+        "split_provider.h",
+    ],
+    deps = [
+        ":data_service",
+        ":grpc_util",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+    ],
+)
+
+cc_library(
+    name = "task_remover",
+    srcs = ["task_remover.cc"],
+    hdrs = ["task_remover.h"],
+    deps = [
+        "//tensorflow/core:framework_internal",
+        "//tensorflow/core:lib",
+        "@com_google_absl//absl/container:flat_hash_set",
+    ],
+)
+
+cc_library(
+    name = "task_runner",
+    srcs = ["task_runner.cc"],
+    hdrs = ["task_runner.h"],
+    deps = [
+        ":common_proto_cc",
+        ":data_transfer",
+        ":worker_proto_cc",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core/data:standalone",
+        "//tensorflow/core/protobuf:for_core_protos_cc",
+    ],
+)
+
+tf_cc_test(
+    name = "task_runner_test",
+    srcs = ["task_runner_test.cc"],
+    deps = [
+        ":task_runner",
+        ":worker_proto_cc",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+        "//tensorflow/core/data:dataset_proto_cc",
+        "@com_google_absl//absl/memory",
+    ],
+)
+
+cc_library(
     name = "test_cluster",
     testonly = True,
     srcs = ["test_cluster.cc"],
@@ -370,7 +484,7 @@ cc_library(
     hdrs = [
         "test_util.h",
     ],
-    data = glob(["testdata/*.pbtxt"]),
+    data = ["//tensorflow/core/data/service/testdata"],
     deps = [
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
@@ -422,6 +536,7 @@ tf_cc_test(
 cc_grpc_library(
     name = "worker_cc_grpc_proto",
     srcs = [":worker_proto"],
+    compatible_with = get_compatible_with_cloud(),
     generate_mocks = True,
     grpc_only = True,
     deps = [":worker_proto_cc"],
@@ -437,15 +552,19 @@ cc_library(
         ":common_proto_cc",
         ":credentials_factory",
         ":data_service",
+        ":data_transfer",
         ":dispatcher_cc_grpc_proto",
         ":dispatcher_proto_cc",
         ":grpc_util",
+        ":split_provider",
+        ":task_runner",
         ":utils",
         ":worker_proto_cc",
         "//tensorflow/c:c_api_internal",
         "//tensorflow/c:tf_status_helper",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_internal",
+        "//tensorflow/core:framework",
         "//tensorflow/core:framework_internal",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
@@ -453,6 +572,7 @@ cc_library(
         "//tensorflow/core/data:dataset_proto_cc",
         "//tensorflow/core/data:standalone",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/memory",
         tf_grpc_cc_dependency(),
     ],

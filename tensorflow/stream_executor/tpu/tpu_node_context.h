@@ -24,11 +24,11 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/transfer_manager.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/tpu/tpu_ops_c_api.h"
 #include "tensorflow/stream_executor/device_memory_allocator.h"
 #include "tensorflow/stream_executor/lib/status.h"
 #include "tensorflow/stream_executor/lib/statusor.h"
 #include "tensorflow/stream_executor/tpu/status_helper.h"
-#include "tensorflow/stream_executor/tpu/tpu_node_context_c_api.h"
 #include "tensorflow/stream_executor/tpu/tpu_platform_interface.h"
 
 namespace tensorflow {
@@ -66,6 +66,8 @@ class TpuNodeContext final {
   xla::Backend* backend() const;
 
   stream_executor::StreamExecutor* stream_executor() const;
+
+  bool CompactionSupported(int device_ordinal) const;
 
  private:
   const int device_ordinal_;

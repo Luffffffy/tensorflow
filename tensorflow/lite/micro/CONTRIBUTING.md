@@ -1,43 +1,30 @@
+<!-- mdformat off(b/169948621#comment2) -->
+
 <!--
 Semi-automated TOC generation with instructions from
 https://github.com/ekalinin/github-markdown-toc#auto-insert-and-update-toc
 -->
 
 <!--ts-->
+   * [Contributing Guidelines](#contributing-guidelines)
+      * [General Pull Request Guidelines](#general-pull-request-guidelines)
+      * [Guidelines for Specific Contribution Categories](#guidelines-for-specific-contribution-categories)
+         * [Bug Fixes](#bug-fixes)
+         * [Reference Kernel Implementations](#reference-kernel-implementations)
+         * [Optimized Kernel Implementations](#optimized-kernel-implementations)
+         * [New Target / Platform / IDE / Examples](#new-target--platform--ide--examples)
+         * [New Features](#new-features)
+   * [Development Workflow Notes](#development-workflow-notes)
+      * [Initial Setup](#initial-setup)
+      * [Before submitting your PR](#before-submitting-your-pr)
+      * [During the PR review](#during-the-pr-review)
+      * [Reviewer notes](#reviewer-notes)
+      * [Python notes](#python-notes)
+   * [Continuous Integration System](#continuous-integration-system)
 
-*   [Resources](#resources)
-*   [Contributing Guidelines](#contributing-guidelines)
-    *   [General Pull Request Guidelines](#general-pull-request-guidelines)
-    *   [Guidelines for Specific Contribution Categories](#guidelines-for-specific-contribution-categories)
-        *   [Bug Fixes](#bug-fixes)
-        *   [Reference Kernel Implementations](#reference-kernel-implementations)
-        *   [Optimized Kernel Implementations](#optimized-kernel-implementations)
-        *   [New Target / Platform / IDE / Examples](#new-target--platform--ide--examples)
-        *   [New Features](#new-features)
-*   [Development Workflow](#development-workflow)
-    *   [Before Creating a Pull Request](#before-creating-a-pull-request)
-    *   [Making Changes During the Pull Request Review Process](#making-changes-during-the-pull-request-review-process)
-    *   [Reviewer Notes](#reviewer-notes)
-    *   [Python Notes](#python-notes)
-
-<!-- Added by: advaitjain, at: Wed 02 Sep 2020 02:59:14 PM PDT -->
+<!-- Added by: advaitjain, at: Wed 27 Jan 2021 02:25:07 PM PST -->
 
 <!--te-->
-
-# Resources
-
-A
-[TF Lite Micro Github issue](https://github.com/tensorflow/tensorflow/issues/new?labels=comp%3Amicro&template=70-tflite-micro-issue.md)
-should be the primary method of getting in touch with the TensorFlow Lite Micro
-(TFLM) team.
-
-The following resources may also be useful:
-
-1.  SIG Micro [email group](https://groups.google.com/a/tensorflow.org/g/micro)
-    and
-    [monthly meetings](http://doc/1YHq9rmhrOUdcZnrEnVCWvd87s2wQbq4z17HbeRl-DBc).
-
-1.  SIG Micro [gitter chat room](https://gitter.im/tensorflow/sig-micro).
 
 # Contributing Guidelines
 
@@ -125,7 +112,7 @@ fixing a bug needs a bigger architectural change.
 ### Reference Kernel Implementations
 
 Pull requests that port reference kernels from TF Lite Mobile to TF Lite Micro
-are welcome once we have enouch context from the contributor on why the
+are welcome once we have enough context from the contributor on why the
 additional kernel is needed.
 
 1.  Please create a
@@ -195,48 +182,97 @@ to determine if the requested feature aligns with the TFLM roadmap.
 
 # Development Workflow Notes
 
+## Initial Setup
+
+Below are some tips that might be useful and improve the development experience.
+
+* Add the [Refined GitHub](https://github.com/sindresorhus/refined-github)
+  plugin to make the github experience even better.
+
+* Code search the [TfLite Micro codebase](https://sourcegraph.com/github.com/tensorflow/tensorflow@master/-/tree/tensorflow/lite/micro)
+  on Sourcegraph. And optionally install the [plugin that enables GitHub integration](https://docs.sourcegraph.com/integration/github#github-integration-with-sourcegraph).
+
+* Install [bazel](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/tools/ci_build/install/install_bazel.sh) and [buildifier](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/tools/ci_build/install/install_buildifier.sh).
+
+* Install the latest clang and clang-format. For example,
+  [here](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/tools/ci_build/Dockerfile.micro)
+  is the  what we do for the TFLM continuous integration Docker container.
+
+* Get a copy of [cpplint](https://github.com/google/styleguide/tree/gh-pages/cpplint)
+
+* Add a git hook to check for code style etc. prior to creating a pull request:
+  ```
+  cp tensorflow/lite/micro/tools/dev_setup/pre-push.tflm .git/hooks/pre-push
+  ```
+
 ## Before submitting your PR
 
 1.  Run in-place clang-format on all the files that are modified in your git
-    tree with ``clang-format -i -style=google `git ls-files -m` ``
+    tree with
+
+    ```
+    clang-format -i -style=google `git ls-files -m | grep "\.cc"`
+    clang-format -i -style=google `git ls-files -m | grep "\.h"`
+    ```
 
 1.  Make sure your code is lint-free.
 
-    Get a copy of
-    [cpplint](https://github.com/google/styleguide/tree/gh-pages/cpplint)
-
-    Run cpplint.py on all modified files in your git tree: ``cpplint.py `git
-    ls-files -m` ``
+    ```
+    cpplint.py `git ls-files -m`
+    ```
 
 1.  Run all the tests for x86, and any other platform that you are modifying.
-    `make -f tensorflow/lite/micro/tools/make/Makefile test`
+
+    ```
+    tensorflow/lite/micro/tools/ci_build/test_x86.sh
+    ```
 
     Please check the READMEs in the optimized kernel directories for specific
     instructions.
 
-1.  Sometimes, bugs are caught by the address sanitizer that can go unnoticed
-    via the Makefile. To run a test with the address sanitizer, use the
-    following command (replace `micro_interpreter_test` with the target that you
-    want to test: `CC=clang BAZEL_COMPILER=llvm bazel run
-    --copt=-DADDRESS_SANITIZER     --copt=-fsanitize=address
-    --linkopt=-fsanitize=address tensorflow/lite/micro:micro_interpreter_test`
+1.  Sometimes, bugs are caught by the sanitizers that can go unnoticed
+    via the Makefile. To run a test with the different sanitizers, use the
+    following commands (replace `micro_interpreter_test` with the target that you
+    want to test:
+
+    ```
+    CC=clang bazel run --config=asan tensorflow/lite/micro:micro_interpreter_test
+    CC=clang bazel run --config=msan tensorflow/lite/micro:micro_interpreter_test
+    CC=clang bazel run --config=ubsan tensorflow/lite/micro:micro_interpreter_test
+    ```
 
 ## During the PR review
 
-1.  Do not change the git version history. Always merge upstream/master, and no
-    force-pushes please.
+1.  Do not change the git version history.
+
+    *   Always merge upstream/master (***do not rebase***) and no force-pushes
+        please.
+
+    *   Having an extra merge commit it ok as the github review tool handles
+        that gracefully.
 
     Assuming that you forked tensorflow and added a remote called upstream with:
+
     `git remote add upstream https://github.com/tensorflow/tensorflow.git`
 
     Fetch the latest changes from upstream and merge into your local branch.
-    `git fetch upstream git merge upstream/master`
 
-    In case of a merge conflict, resolve via: ``` git mergetool
+    ```
+    git fetch upstream
+    git merge upstream/master
+    ```
+
+    In case of a merge conflict, resolve via:
+
+    ```
+    git mergetool
 
     # Use your favorite diff tools (e.g. meld) to resolve the conflicts.
 
-    git add <files that were manually resolved> git commit ```
+    git add <files that were manually resolved>
+
+    git commit
+    ```
 
 1.  If a force push seems to be the only path forward, please stop and let your
     PR reviewer know ***before*** force pushing. We will attempt to do the merge
@@ -245,8 +281,10 @@ to determine if the requested feature aligns with the TFLM roadmap.
 
 ## Reviewer notes
 
-*   [GIthub CLI](cli.github.com) can be useful to quickly checkout a PR to test
-    locally. `gh pr checkout <PR number>`
+*   [GIthub CLI](https://cli.github.com) can be useful to quickly checkout a PR
+    to test locally.
+
+    `gh pr checkout <PR number>`
 
 *   Google engineers on the Tensorflow team will have the permissions to push
     edits to most PRs. This can be useful to make some small fixes as a result
@@ -256,8 +294,11 @@ to determine if the requested feature aligns with the TFLM roadmap.
     One example of this is
     [this comment](https://github.com/tensorflow/tensorflow/pull/38634#issuecomment-683190474).
 
-    And a sketch of the steps: ``` git remote add <remote_name>
-    git@github.com:<PR author>/tensorflow.git git fetch <remote_name>
+    And a sketch of the steps:
+
+    ```
+    git remote add <remote_name> git@github.com:<PR author>/tensorflow.git
+    git fetch <remote_name>
 
     git checkout -b <local-branch-name> <remote_name>/<PR branch name>
 
@@ -269,7 +310,8 @@ to determine if the requested feature aligns with the TFLM roadmap.
 
     # remove the temp remote to clean up your git environment.
 
-    git remote rm <remote_name> ```
+    git remote rm <remote_name>
+    ```
 
 ## Python notes
 
@@ -284,3 +326,53 @@ that can be expanded and improved as necessary.
     ```
     yapf log_parser.py -i --style='{based_on_style: pep8, indent_width: 2}'
     ```
+
+# Continuous Integration System
+
+*   As a contributor, please make sure that the TfLite Micro build is green.
+    You can click on the details link to see what the errors are:
+
+[![TfLite Micro Build](docs/images/tflm_continuous_integration_1.png)](https://storage.googleapis.com/tensorflow-kokoro-build-badges/tflite-micro.html)
+
+*   Tests that are run as part of the CI are with the
+    [micro/tools/ci_build/test_all.sh](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/micro/tools/ci_build/test_all.sh)
+    script when run with the `GITHUB_PRESUBMIT` command line parameter:
+    ```
+    tensorflow/lite/micro/tools/ci_build/test_all.sh GITHUB_PRESUBMIT
+    ```
+
+*   If an error is not reproducible on your development machine, you can
+    recreate the docker container that is used on the CI servers.
+
+      * First, create a build a TFLM docker image with:
+        ```
+        tensorflow/tools/ci_build/ci_build.sh micro bash
+        ```
+        The second parameter to the ci_build.sh script is not important. It can
+        be any command.
+
+      * Next, mount the tensorflow repo on your machine to the docker container.
+        Please be careful (or make a separate clone of tensorflow) since any
+        changes docker container will also be reflected in the directory in the
+        host machine.
+        ```
+        docker run -v `pwd`:/tensorflow -it tf_ci.micro bash
+        # cd tensorflow
+        ```
+
+      * If you would prefer to not mount your local folder on the docker image,
+        you can also simply download the branch:
+        ```
+        docker run -it tf_ci.micro bash
+        # wget https://github.com/<github-username>/tensorflow/archive/<git-branch>.zip
+        # unzip <git-branch>.zip
+        # cd tensorflow-<git-branch>
+        ```
+
+      * Within the docker container, you can now run the TFLM test script, or
+        any other command that you would like to test. For example, the following
+        commands will run all of the TFLM checks:
+        ```
+        # tensorflow/lite/micro/tools/ci_build/test_all.sh GITHUB_PRESUBMIT
+        ```
+

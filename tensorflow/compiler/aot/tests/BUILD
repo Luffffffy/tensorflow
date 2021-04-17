@@ -1,10 +1,15 @@
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "filegroup")
+
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "genrule")
 load("//tensorflow/compiler/aot:tfcompile.bzl", "tf_library")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow/compiler/mlir:glob_lit_test.bzl", "glob_lit_tests")
 
 package(
     default_visibility = ["//visibility:private"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 glob_lit_tests(
@@ -56,6 +61,7 @@ test_suite(
         ":test_graph_tfvariable_test",
         ":tfcompile_test",
     ],
+    visibility = ["//visibility:public"],
 )
 
 py_binary(
@@ -77,6 +83,7 @@ py_binary(
         "//tensorflow/python:session",
         "//tensorflow/python:training",
         "//tensorflow/python:variables",
+        "@absl_py//absl:app",
         "@six_archive//:six",
     ],
 )
@@ -110,8 +117,8 @@ genrule(
     # have control of the full GPU.
     cmd = "CUDA_VISIBLE_DEVICES='' " +
           "$(location :make_test_graphs) --out_dir $(@D)",
-    exec_tools = [":make_test_graphs"],
     tags = ["manual"],
+    tools = [":make_test_graphs"],
 )
 
 tf_library(
@@ -331,9 +338,9 @@ tf_cc_test(
         "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:hlo_profile_printer",
         "//tensorflow/core:lib",
-        "//tensorflow/core:regexp_internal",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core/platform:regexp",
         "//third_party/eigen3",
         "@com_google_absl//absl/strings",
     ],
@@ -554,9 +561,9 @@ tf_cc_test(
         "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:hlo_profile_printer",
         "//tensorflow/core:lib",
-        "//tensorflow/core:regexp_internal",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core/platform:regexp",
         "//third_party/eigen3",
         "@com_google_absl//absl/strings",
     ],

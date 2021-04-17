@@ -13,32 +13,28 @@
 # limitations under the License.
 # ==============================================================================
 """Microbenchmarks for Keras components in eager mode."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import time
-import six
 
 import tensorflow as tf
 
 from tensorflow.python.eager import context
-from tensorflow.python.platform import benchmark
-from tensorflow.python.util import tf_inspect
+from tensorflow.python.eager.context import get_executor
+from tensorflow.python.keras.utils import tf_inspect
+from tensorflow.python.platform import benchmark  # pylint: disable=unused-import
 
 
 def _run_benchmark(func, num_iters, execution_mode=None):
-  ctx = context.context()
   with context.execution_mode(execution_mode):
     # call func to warm up
     func()
     if execution_mode == context.ASYNC:
-      ctx.executor.wait()
+      get_executor().wait()
     start = time.time()
     for _ in range(num_iters):
       func()
     if execution_mode == context.ASYNC:
-      ctx.executor.wait()
+      get_executor().wait()
     end = time.time()
 
     return end - start
@@ -147,8 +143,8 @@ class MicroBenchmarksBase(tf.test.Benchmark):
     self._run(fn, 10000)
 
 
-class KerasLayerCallOverheadBenchmarks(
-    six.with_metaclass(benchmark.ParameterizedBenchmark, MicroBenchmarksBase)):
+class KerasLayerCallOverheadBenchmarks(  # pylint: disable=undefined-variable
+    MicroBenchmarksBase, metaclass=benchmark.ParameterizedBenchmark):
 
   # The set of layers for benchmarking. To add benchmarks for new layers,
   # please add the parameter configs to "_benchmark_paramters".

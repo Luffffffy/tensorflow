@@ -52,7 +52,7 @@ limitations under the License.
 //   params.device = &device;
 //
 //   /* Plugin code below */
-//   constexpr char DEVICE_NAME[] = "MyDevice";
+//   constexpr char DEVICE_NAME[] = "MY_DEVICE";
 //   constexpr char DEVICE_TYPE[] = "GPU";
 //
 //   void create_device(const SP_Platform* platform,
@@ -76,7 +76,7 @@ limitations under the License.
 //     // Values such as `name` and `type` must outlive SE_InitPlugin call.
 //     params->platform->name = DEVICE_NAME;
 //     params->platform->type = DEVICE_TYPE;
-//     params->platform->visible_device_count = 2;
+//     params->platform_fns->get_device_count = get_device_count;
 //     params->platform_fns->create_device = create_device;
 //     params->platform_fns->destroy_device = destroy_device;
 //     ...
@@ -140,15 +140,16 @@ typedef enum SE_EventStatus {
 // https://cs.opensource.google/tensorflow/tensorflow/+/refs/tags/v2.3.0:tensorflow/stream_executor/device_memory.h;l=57
 typedef struct SP_DeviceMemoryBase {
   size_t struct_size;
-  void* ext;  // free-form data set by plugin
+  void* ext;  // Reserved for future use
   // Platform-dependent value representing allocated memory.
+  // Note that the pointer does not have to be to the virtual address itself.
   void* opaque;
   uint64_t size;     // Size in bytes of this allocation.
   uint64_t payload;  // Value for plugin's use
 } SP_DeviceMemoryBase;
 
 #define SP_DEVICE_MEMORY_BASE_STRUCT_SIZE \
-  TF_OFFSET_OF_END(SP_DeviceMemoryBase, size)
+  TF_OFFSET_OF_END(SP_DeviceMemoryBase, payload)
 
 typedef struct SP_Device {
   size_t struct_size;
@@ -158,9 +159,30 @@ typedef struct SP_Device {
   // Device vendor can store handle to their device representation
   // here.
   void* device_handle;
+
+  // [Optional]
+  // Device hardware name. Used for printing.
+  // Must be null-terminated.
+  const char* hardware_name;
+
+  // [Optional]
+  // Device vendor name. Used for printing.
+  // Must be null-terminated.
+  const char* device_vendor;
+
+  // [Optional]
+  // Returns the PCI bus identifier for this device, of the form
+  // [domain]:[bus]:[device].[function]
+  // where domain number is usually 0000.
+  // Example: 0000:00:02.1
+  // For more information see:
+  // https://en.wikipedia.org/wiki/PCI_configuration_space
+  // https://www.oreilly.com/library/view/linux-device-drivers/0596005903/ch12.html
+  // Used for printing. Must be null-terminated.
+  const char* pci_bus_id;
 } SP_Device;
 
-#define SP_DEVICE_STRUCT_SIZE TF_OFFSET_OF_END(SP_Device, device_handle)
+#define SP_DEVICE_STRUCT_SIZE TF_OFFSET_OF_END(SP_Device, pci_bus_id)
 
 typedef struct SE_CreateDeviceParams {
   size_t struct_size;
@@ -173,6 +195,42 @@ typedef struct SE_CreateDeviceParams {
 
 #define SE_CREATE_DEVICE_PARAMS_STRUCT_SIZE \
   TF_OFFSET_OF_END(SE_CreateDeviceParams, device)
+
+typedef struct SP_DeviceFns {
+  size_t struct_size;
+  void* ext;  // reserved for future use
+
+  // [Optional]
+  // Returns the NUMA node associated with this device, for use in
+  // determining socket locality. If the NUMA node could not be determined, -1
+  // is returned.
+  // Negative values are treated as "unset".
+  int32_t (*get_numa_node)(const SP_Device* device);
+
+  // [Optional]
+  // Device's memory bandwidth in bytes/sec.  (This is for reads/writes to/from
+  // the device's own memory, not for transfers between the host and device.)
+  // Negative values are treated as "unset".
+  int64_t (*get_memory_bandwidth)(const SP_Device* device);
+
+  // [Optional]
+  // Estimate of average number of floating point operations per second for
+  // this device * 10e-9.
+  // Negative values are treated as "unset".
+  double (*get_gflops)(const SP_Device* device);
+} SP_DeviceFns;
+
+#define SP_DEVICE_FNS_STRUCT_SIZE TF_OFFSET_OF_END(SP_DeviceFns, get_gflops)
+
+typedef struct SE_CreateDeviceFnsParams {
+  size_t struct_size;
+  void* ext;  // reserved for future use
+
+  SP_DeviceFns* device_fns;  // output, to be filled by plugin
+} SE_CreateDeviceFnsParams;
+
+#define SE_CREATE_DEVICE_FNS_PARAMS_STRUCT_SIZE \
+  TF_OFFSET_OF_END(SE_CreateDeviceFnsParams, device_fns)
 
 typedef struct SP_StreamExecutor {
   size_t struct_size;
@@ -321,13 +379,23 @@ typedef struct SP_StreamExecutor {
   void (*block_host_for_event)(const SP_Device* device, SP_Event event,
                                TF_Status* status);
 
+  // [Optional]
+  // Causes the host code to synchronously wait for operations entrained onto
+  // stream to complete. Effectively a join on the asynchronous device
+  // operations enqueued on the stream before this program point.
+  // If not set, then corresponding functionality will be implemented
+  // by registering an event on the `stream` and waiting for it using
+  // `block_host_for_event`.
+  void (*block_host_until_done)(const SP_Device* device, SP_Stream stream,
+                                TF_Status* status);
+
   // Synchronizes all activity occurring in the StreamExecutor's context (most
   // likely a whole device).
   void (*synchronize_all_activity)(const SP_Device* device, TF_Status* status);
 
   // Enqueues on a stream a user-specified function to be run on the host.
   // `callback_arg` should be passed as the first argument to `callback_fn`.
-  TF_Bool (*host_callback)(SP_Device* device, SP_Stream stream,
+  TF_Bool (*host_callback)(const SP_Device* device, SP_Stream stream,
                            SE_StatusCallbackFn callback_fn, void* callback_arg);
 } SP_StreamExecutor;
 
@@ -349,28 +417,36 @@ typedef struct SP_Platform {
 
   void* ext;  // free-form data set by plugin
 
-  // Platform name. Must be null-terminated.
+  // Platform name (also referred to as subtype), for example MY_DEVICE.
+  // The name must start with a capital letter and consist of
+  // capital letters and underscores.
+  // Must be null-terminated.
   const char* name;
 
   // Device type name, for example GPU. Must be null-terminated.
+  // The name must start with a capital letter and consist of
+  // capital letters and underscores.
   const char* type;
-
-  // Number of visible devices
-  size_t visible_device_count;
 
   // Whether this platform supports unified memory.
   // Unified memory is a single memory address space accessible from any device.
   TF_Bool supports_unified_memory;
+
+  // Whether to wrap allocator for this device with an allocator that uses BFC
+  // (best-fit with coalescing) strategy.
+  TF_Bool use_bfc_allocator;
 } SP_Platform;
 
-#define SP_PLATFORM_STRUCT_SIZE \
-  TF_OFFSET_OF_END(SP_Platform, supports_unified_memory)
+#define SP_PLATFORM_STRUCT_SIZE TF_OFFSET_OF_END(SP_Platform, use_bfc_allocator)
 
 typedef struct SP_PlatformFns {
   size_t struct_size;
 
   void* ext;  // reserved for future use
 
+  // Callbacks for getting device count
+  void (*get_device_count)(const SP_Platform* platform, int* device_count,
+                           TF_Status* status);
   // Callbacks for creating/destroying SP_Device.
   void (*create_device)(const SP_Platform* platform,
                         SE_CreateDeviceParams* params, TF_Status* status);
@@ -378,6 +454,16 @@ typedef struct SP_PlatformFns {
   // Clean up fields inside SP_Device that were allocated
   // by the plugin. `device` itself should not be deleted here.
   void (*destroy_device)(const SP_Platform* platform, SP_Device* device);
+
+  // Callbacks for creating/destroying SP_DeviceFns.
+  void (*create_device_fns)(const SP_Platform* platform,
+                            SE_CreateDeviceFnsParams* params,
+                            TF_Status* status);
+
+  // Clean up fields inside SP_DeviceFns that were allocated
+  // by the plugin. `device_fns` itself should not be deleted here.
+  void (*destroy_device_fns)(const SP_Platform* platform,
+                             SP_DeviceFns* device_fns);
 
   // Callbacks for creating/destroying SP_StreamExecutor.
   void (*create_stream_executor)(const SP_Platform* platform,

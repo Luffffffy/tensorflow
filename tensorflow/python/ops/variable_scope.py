@@ -233,6 +233,9 @@ def enable_resource_variables():
   """
   global _DEFAULT_USE_RESOURCE
   _DEFAULT_USE_RESOURCE = True
+  # copybara:comment_begin(Reduce verbosity for OSS users)
+  logging.info("Enabling resource variables")
+  # copybara:comment_end
   _api_usage_gauge.get_cell().set(True)
 
 
@@ -267,6 +270,9 @@ def disable_resource_variables():
   """
   global _DEFAULT_USE_RESOURCE
   _DEFAULT_USE_RESOURCE = False
+  # copybara:comment_begin(Reduce verbosity for OSS users)
+  logging.info("Disabling resource variables")
+  # copybara:comment_end
   _api_usage_gauge.get_cell().set(False)
 
 
@@ -2084,6 +2090,12 @@ class variable_scope(object):
   ones while providing checks to not create or share by accident. For details,
   see the [Variable Scope How To](https://tensorflow.org/guide/variables), here
   we present only a few basic examples.
+
+  The Variable Scope works as expected when the Eager Execution is Disabled.
+
+  ```python
+  tf.compat.v1.disable_eager_execution()
+  ```
 
   Simple example of how to create a new variable:
 

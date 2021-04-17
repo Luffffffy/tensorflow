@@ -160,6 +160,14 @@ def make_reduce_tests(reduce_op,
             "keepdims": [True, False],
             "fully_quantize": [True],
         },
+        {
+            "input_dtype": [tf.float32],
+            "input_shape": [[2, 0, 2]],
+            "axis": [0],
+            "const_axis": [True],
+            "keepdims": [True, False],
+            "fully_quantize": [False],
+        },
     ]
     # test_parameters include fully_quantize option only when
     # allow_fully_quantize is True.
@@ -266,3 +274,9 @@ def make_reduce_min_tests(options):
 def make_reduce_any_tests(options):
   """Make a set of tests to do any."""
   return make_reduce_tests(tf.reduce_any, boolean_tensor_only=True)(options)
+
+
+@register_make_test_function()
+def make_reduce_all_tests(options):
+  """Make a set of tests to do all."""
+  return make_reduce_tests(tf.reduce_all, boolean_tensor_only=True)(options)

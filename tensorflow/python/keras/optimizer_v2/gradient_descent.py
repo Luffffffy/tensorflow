@@ -14,9 +14,6 @@
 # ==============================================================================
 """SGD optimizer implementation."""
 # pylint: disable=g-classes-have-attributes
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from tensorflow.python.framework import ops
 from tensorflow.python.keras.optimizer_v2 import optimizer_v2
@@ -43,7 +40,7 @@ class SGD(optimizer_v2.OptimizerV2):
   w = w + velocity
   ```
 
-  When `nesterov=False`, this rule becomes:
+  When `nesterov=True`, this rule becomes:
 
   ```python
   velocity = momentum * velocity - learning_rate * g
@@ -187,7 +184,7 @@ class SGD(optimizer_v2.OptimizerV2):
     config = super(SGD, self).get_config()
     config.update({
         "learning_rate": self._serialize_hyperparameter("learning_rate"),
-        "decay": self._serialize_hyperparameter("decay"),
+        "decay": self._initial_decay,
         "momentum": self._serialize_hyperparameter("momentum"),
         "nesterov": self.nesterov,
     })

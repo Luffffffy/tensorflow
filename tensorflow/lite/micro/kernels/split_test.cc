@@ -18,8 +18,8 @@ limitations under the License.
 #include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/micro/debug_log.h"
 #include "tensorflow/lite/micro/kernels/kernel_runner.h"
+#include "tensorflow/lite/micro/test_helpers.h"
 #include "tensorflow/lite/micro/testing/micro_test.h"
-#include "tensorflow/lite/micro/testing/test_utils.h"
 
 namespace tflite {
 namespace testing {
@@ -42,10 +42,9 @@ void TestSplitTwoOutputsFloat(
   constexpr int axis_size = 1;
   constexpr int tensors_size = input_size + output_size + axis_size;
   TfLiteTensor tensors[tensors_size] = {
-      CreateQuantized32Tensor(axis_data, axis_dims, 1.0),
-      CreateFloatTensor(input_data, input_dims),
-      CreateFloatTensor(output1_data, output1_dims),
-      CreateFloatTensor(output2_data, output2_dims)};
+      CreateTensor(axis_data, axis_dims), CreateTensor(input_data, input_dims),
+      CreateTensor(output1_data, output1_dims),
+      CreateTensor(output2_data, output2_dims)};
 
   // Currently only support constant axis tensor.
   tensors[0].allocation_type = kTfLiteMmapRo;
@@ -65,7 +64,7 @@ void TestSplitTwoOutputsFloat(
 
   const TfLiteRegistration registration = tflite::ops::micro::Register_SPLIT();
   micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
-                             outputs_array, nullptr, micro_test::reporter);
+                             outputs_array, nullptr);
 
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
@@ -104,12 +103,12 @@ void TestSplitFourOutputsFloat(
   constexpr int axis_size = 1;
   constexpr int tensors_size = input_size + output_size + axis_size;
   TfLiteTensor tensors[tensors_size] = {
-      CreateQuantized32Tensor(axis_data, axis_dims, 1.0),
-      CreateFloatTensor(input_data, input_dims),
-      CreateFloatTensor(output1_data, output1_dims),
-      CreateFloatTensor(output2_data, output2_dims),
-      CreateFloatTensor(output3_data, output1_dims),
-      CreateFloatTensor(output4_data, output1_dims)};
+      CreateTensor(axis_data, axis_dims),
+      CreateTensor(input_data, input_dims),
+      CreateTensor(output1_data, output1_dims),
+      CreateTensor(output2_data, output2_dims),
+      CreateTensor(output3_data, output1_dims),
+      CreateTensor(output4_data, output1_dims)};
 
   // Currently only support constant axis tensor.
   tensors[0].allocation_type = kTfLiteMmapRo;
@@ -134,7 +133,7 @@ void TestSplitFourOutputsFloat(
 
   const TfLiteRegistration registration = tflite::ops::micro::Register_SPLIT();
   micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
-                             outputs_array, nullptr, micro_test::reporter);
+                             outputs_array, nullptr);
 
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
@@ -171,7 +170,7 @@ void TestSplitTwoOutputsQuantized(
   constexpr int axis_size = 1;
   constexpr int tensors_size = input_size + output_size + axis_size;
   TfLiteTensor tensors[tensors_size] = {
-      CreateQuantized32Tensor(axis_data, axis_dims, 1.0),
+      CreateTensor(axis_data, axis_dims),
       CreateQuantizedTensor(input_data, input_dims, 0, 10),
       CreateQuantizedTensor(output1_data, output1_dims, 0, 10),
       CreateQuantizedTensor(output2_data, output2_dims, 0, 10)};
@@ -195,7 +194,7 @@ void TestSplitTwoOutputsQuantized(
 
   const TfLiteRegistration registration = tflite::ops::micro::Register_SPLIT();
   micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
-                             outputs_array, nullptr, micro_test::reporter);
+                             outputs_array, nullptr);
 
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
@@ -227,10 +226,9 @@ void TestSplitTwoOutputsQuantized32(
   constexpr int axis_size = 1;
   constexpr int tensors_size = input_size + output_size + axis_size;
   TfLiteTensor tensors[tensors_size] = {
-      CreateQuantized32Tensor(axis_data, axis_dims, 1.0),
-      CreateQuantized32Tensor(input_data, input_dims, 1.0),
-      CreateQuantized32Tensor(output1_data, output1_dims, 1.0),
-      CreateQuantized32Tensor(output2_data, output2_dims, 1.0)};
+      CreateTensor(axis_data, axis_dims), CreateTensor(input_data, input_dims),
+      CreateTensor(output1_data, output1_dims),
+      CreateTensor(output2_data, output2_dims)};
 
   // Currently only support constant axis tensor.
   tensors[0].allocation_type = kTfLiteMmapRo;
@@ -251,7 +249,7 @@ void TestSplitTwoOutputsQuantized32(
 
   const TfLiteRegistration registration = tflite::ops::micro::Register_SPLIT();
   micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
-                             outputs_array, nullptr, micro_test::reporter);
+                             outputs_array, nullptr);
 
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());

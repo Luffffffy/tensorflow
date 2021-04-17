@@ -1,8 +1,10 @@
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
+
 # Experimental hadoop filesystem plugin.
 load("//tensorflow:tensorflow.bzl", "get_win_copts", "tf_cc_shared_object", "tf_cc_test")
 
 package(
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 # Filesystem implementation for HADOOP environments
@@ -20,12 +22,14 @@ cc_library(
     name = "hadoop_filesystem_impl",
     srcs = ["hadoop_filesystem.cc"],
     hdrs = ["hadoop_filesystem.h"],
+    compatible_with = [],
     copts = select({
         "//conditions:default": [],
         "//tensorflow:windows": get_win_copts(),
     }),
     deps = [
         "//tensorflow/c:env",
+        "//tensorflow/c:logging",
         "//tensorflow/c:tf_status",
         "//tensorflow/c/experimental/filesystem:filesystem_interface",
         "//third_party/hadoop:hdfs",

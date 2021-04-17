@@ -46,9 +46,11 @@ class ConstantFolding : public GraphOptimizer {
                                      NodeMap* node_map);
 
   explicit ConstantFolding(DeviceBase* cpu_device,
-                           bool disable_compressed_tensor_optimization = false);
+                           bool disable_compressed_tensor_optimization = false,
+                           bool fold_quantization_emulation = true);
   ConstantFolding(RewriterConfig::Toggle opt_level, DeviceBase* cpu_device,
-                  bool disable_compressed_tensor_optimization = false);
+                  bool disable_compressed_tensor_optimization = false,
+                  bool fold_quantization_emulation = true);
 
   ~ConstantFolding() override {}
 
@@ -102,6 +104,9 @@ class ConstantFolding : public GraphOptimizer {
 
   bool IsOnes(const NodeDef& node) const;
   bool IsZeros(const NodeDef& node) const;
+  bool ReplaceOperationWithBroadcastTo(int input_to_broadcast,
+                                       const GraphProperties& properties,
+                                       NodeDef* node, GraphDef* graph);
   void ReplaceOperationWithIdentity(int input_to_forward,
                                     const GraphProperties& properties,
                                     NodeDef* node, GraphDef* graph);
@@ -337,6 +342,7 @@ class ConstantFolding : public GraphOptimizer {
   bool graph_modified_;
   bool graph_contains_assign_or_inplace_op_;
   bool disable_compressed_tensor_optimization_;
+  bool fold_quantization_emulation_;
 };
 
 }  // end namespace grappler

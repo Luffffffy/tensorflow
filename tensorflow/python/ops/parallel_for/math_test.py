@@ -196,12 +196,15 @@ class MathTest(PForTestCase, parameterized.TestCase):
           math_ops.subtract,
           math_ops.truncate_mod,
           safe_polygamma,
-          safe_zeta,
       ]
       # FloorDiv fails on XLA due floor's discontinuities exacerbating small
       # division differences.
       if not test_util.is_xla_enabled():
         float_ops += [math_ops.floor_div]
+        # TODO(b/168912036): Re-enable once GPU + XLA issues for Zeta are
+        # resolved.
+        if not test_util.is_gpu_available():
+          float_ops += [safe_zeta]
       for op in logical_ops + float_ops:
         x = random_ops.random_uniform([7, 3, 5])
         y = random_ops.random_uniform([3, 5])
@@ -681,15 +684,15 @@ class LinalgTest(PForTestCase):
       self._test_loop_fn(loop_fn, 3)
 
   def test_matrix_inverse(self):
-    x = (random_ops.random_uniform([3, 4, 2, 2]) +
-         10 * linalg_ops.eye(2))  # Ensure well-conditioned.
+    x = (random_ops.random_uniform([3, 4, 2, 2]) + 10 * linalg_ops.eye(2)
+        )  # Ensure well-conditioned.
 
     for adjoint in (True, False):
 
       # pylint: disable=cell-var-from-loop
       def loop_fn(i):
-        return linalg_ops.matrix_inverse(array_ops.gather(x, i),
-                                         adjoint=adjoint)
+        return linalg_ops.matrix_inverse(
+            array_ops.gather(x, i), adjoint=adjoint)
 
       # pylint: enable=cell-var-from-loop
       self._test_loop_fn(loop_fn, 2)
@@ -700,8 +703,8 @@ class LinalgTest(PForTestCase):
         for stack_b in (True, False):
           shape_a = (2, 4, 3, 3) if stack_a else (4, 3, 3)
           shape_b = (2, 4, 3, 5) if stack_b else (4, 3, 5)
-          x = (random_ops.random_uniform(shape_a) +
-               10 * linalg_ops.eye(3))  # Ensure well-conditioned.
+          x = (random_ops.random_uniform(shape_a) + 10 * linalg_ops.eye(3)
+              )  # Ensure well-conditioned.
           y = random_ops.random_uniform(shape_b)
 
           # pylint: disable=cell-var-from-loop
@@ -761,12 +764,13 @@ class LinalgTest(PForTestCase):
       y = array_ops.gather(y_series, 0)  # invariant.
       x_i = array_ops.gather(x_series, i)
       y_i = array_ops.gather(y_series, i)
+      z0 = special_math_ops.einsum("ab->b", x_i)
       z1 = special_math_ops.einsum("ab,bc->ac", x_i, y)
       z2 = special_math_ops.einsum("ab,bc->ac", x, y_i)
       z3 = special_math_ops.einsum("ab,bc->ac", x, y)
       z4 = special_math_ops.einsum("ab,bc->ac", x_i, y_i)
       z5 = special_math_ops.einsum("cd,ce->de", y_i, x_i)  # Includes transpose.
-      outputs = [z1, z2, z3, z4, z5]
+      outputs = [z0, z1, z2, z3, z4, z5]
       return outputs
 
     self._test_loop_fn(loop_fn, b)

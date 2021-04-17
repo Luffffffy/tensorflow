@@ -19,12 +19,10 @@ limitations under the License.
 #include "mlir-hlo/Dialect/mhlo/transforms/map_lmhlo_to_scalar_op.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
-#include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/StandardTypes.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 namespace lmhlo {
@@ -59,6 +57,20 @@ struct DotOpConverter : public OpRewritePattern<DotOp> {
       return failure();
     }
 
+    // We don't currently support batching dimensions, or multiple contraction
+    // dimensions.
+    mhlo::DotDimensionNumbers dot_dimension_numbers =
+        op.dot_dimension_numbers();
+    if (dot_dimension_numbers.lhs_batching_dimensions().size() > 0 ||
+        dot_dimension_numbers.rhs_batching_dimensions().size() > 0)
+      return failure();
+    if (dot_dimension_numbers.lhs_contracting_dimensions().size() != 1 ||
+        *dot_dimension_numbers.lhs_contracting_dimensions().begin() != 1 ||
+        dot_dimension_numbers.rhs_contracting_dimensions().size() != 1 ||
+        *dot_dimension_numbers.rhs_contracting_dimensions().begin() != 0) {
+      return failure();
+    }
+
     LogicalResult map_status = success();
     auto body_builder = [&](OpBuilder& builder, Location loc, ValueRange ivs) {
       SmallVector<Value, 2> lhs_indices{ivs[0], ivs[2]},
@@ -81,6 +93,84 @@ struct DotOpConverter : public OpRewritePattern<DotOp> {
                                body_builder);
     if (failed(map_status)) return failure();
 
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Concat Operation Example (2D):
+/// Given inpA[2][1], inpB[2][2], concat_dimension = 1.
+/// Compute output[x1][x2].
+/// Implementation Pseudocode:
+/// s = 0
+/// for a in range(0, 2):
+///   for b in range(0, 1):
+///     output[a][b] = inpA[a][b - s]
+/// s = 1
+/// for a in range(0, 2):
+///   for b in range(1, 3):
+///     output[a][b] = inpB[a][b - s]
+///
+/// Concatenate composes an array from multiple array operands. The array is of
+/// the same rank as each of the input array operands (which must be of the same
+/// rank as each other) and contains the arguments in the order that they were
+/// specified.
+struct ConcatOpConverter : public OpRewritePattern<ConcatenateOp> {
+  using OpRewritePattern<ConcatenateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ConcatenateOp op,
+                                PatternRewriter& rewriter) const override {
+    Location loc = op.getLoc();
+    Value output = op.output();
+    MemRefType outputType = output.getType().cast<MemRefType>();
+    unsigned outputRank = outputType.getRank();
+    ArrayRef<int64_t> outputShape = outputType.getShape();
+
+    ValueRange operands = op.val();
+    uint64_t concatDim = op.dimension();
+    int64_t prevBound = 0;
+
+    for (Value operand : operands) {
+      MemRefType operandType = operand.getType().cast<MemRefType>();
+      ArrayRef<int64_t> operandShape = operandType.getShape();
+
+      // TODO(pashu123): Extend support for dynamic dimensions.
+      if (!operandType.hasStaticShape()) return failure();
+
+      // Only for the concatenation dimension, the value is dimension -
+      // prevBound.
+      SmallVector<AffineExpr, 4> expr;
+      for (unsigned i = 0; i < outputRank; i++) {
+        AffineExpr d0 = (i == concatDim)
+                            ? rewriter.getAffineDimExpr(concatDim) - prevBound
+                            : rewriter.getAffineDimExpr(i);
+
+        expr.push_back(d0);
+      }
+      AffineMap map =
+          AffineMap::get(outputRank, 0, expr, rewriter.getContext());
+
+      // Create multiple for loop nests iterating along the concatenation
+      // dimension.
+      OpBuilder::InsertionGuard guard(rewriter);
+      SmallVector<Value, 3> indices;
+      AffineForOp forOp;
+      for (unsigned i = 0; i < outputRank; i++) {
+        if (i == concatDim) {
+          forOp = rewriter.create<AffineForOp>(loc, prevBound,
+                                               prevBound + operandShape[i]);
+          prevBound += operandShape[i];
+          indices.push_back(forOp.getInductionVar());
+        } else {
+          forOp = rewriter.create<AffineForOp>(loc, 0, outputShape[i]);
+          indices.push_back(forOp.getInductionVar());
+        }
+        rewriter.setInsertionPointToStart(forOp.getBody());
+      }
+      Value storeVal =
+          rewriter.create<AffineLoadOp>(loc, operand, map, indices);
+      rewriter.create<AffineStoreOp>(loc, storeVal, output, indices);
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -133,6 +223,7 @@ void populateLHLOToAffineConversionPattern(MLIRContext* context,
       BinaryOpConverter<lmhlo::MinOp>,
       BinaryOpConverter<lmhlo::MulOp>,
       BinaryOpConverter<lmhlo::SubOp>,
+      ConcatOpConverter,
       DotOpConverter>(context);
   // clang-format on
 }
@@ -143,10 +234,10 @@ struct LhloLegalizeToAffinePass
     registry.insert<AffineDialect>();
   }
   void runOnFunction() override {
-    OwningRewritePatternList patterns;
     auto func = getFunction();
-    populateLHLOToAffineConversionPattern(func.getContext(), &patterns);
-    applyPatternsAndFoldGreedily(func, patterns);
+    OwningRewritePatternList patterns(&getContext());
+    populateLHLOToAffineConversionPattern(&getContext(), &patterns);
+    (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
   }
 };
 

@@ -14,10 +14,13 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tpu/kernels/tpu_op_util.h"
 
+#include <cstdint>
 #include <string>
 
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
-#include "tensorflow/core/tpu/kernels/tpu_compile_c_api.h"
+#include "tensorflow/core/tpu/tpu_compile_interface.h"
+#include "tensorflow/core/tpu/tpu_ops_c_api.h"
 
 namespace tensorflow {
 namespace tpu {
@@ -68,6 +71,15 @@ std::string CreateConfigPrefix(const TPUCompileMetadataProto& metadata) {
 }
 }  // namespace
 
+uint64 CreateFingerprintWithNameAndShapes(
+    uint64 name, const std::vector<tensorflow::TensorShape>& shapes) {
+  std::string shape_prefix = CreateShapePrefix(shapes);
+  VLOG(2) << "CreateFingerprintWithNameAndShapes, name: " << name
+          << ", shape_prefix: " << shape_prefix;
+  return TpuCompileInterface::Get()->FingerprintString(
+      absl::StrCat(name, "_", shape_prefix));
+}
+
 // Return fingerprint_in_metadata if it's not empty; otherwise read input tensor
 // data to compute the fingerprint.
 std::string GuaranteedConstFingerprint(
@@ -77,7 +89,7 @@ std::string GuaranteedConstFingerprint(
     uint64_t fingerprint = 0;
     for (const Tensor& constant : guaranteed_constants) {
       fingerprint =
-          tpu::UtilApiFn()->TpuCompile_CreateGuaranteedConstFingerprintFn(
+          tpu::OpsApiFn()->TpuCompile_CreateGuaranteedConstFingerprintFn(
               fingerprint, constant.tensor_data().data(),
               constant.tensor_data().size());
     }
@@ -91,7 +103,7 @@ std::string GuaranteedConstFingerprint(
 // evaluation of `guaranteed_const_fingerprint()` callback.
 TpuCompilationCacheKey CreateCompilationCacheKey(
     absl::string_view function_name, uint64 function_library_fingerprint,
-    absl::string_view mlir_module, const OpInputList& guaranteed_constants,
+    uint64 mlir_module_fingerprint, const OpInputList& guaranteed_constants,
     const std::vector<TensorShape>& dynamic_shapes,
     const TPUCompileMetadataProto& metadata,
     const TpuMeshStateInterface& mesh_state) {
@@ -110,12 +122,12 @@ TpuCompilationCacheKey CreateCompilationCacheKey(
     }
   }
   CompilationCacheKeyResult result =
-      tpu::UtilApiFn()->TpuCompile_CreateCompilationCacheKeyFn(
+      tpu::OpsApiFn()->TpuCompile_CreateCompilationCacheKeyFn(
           CompilationCacheKeyProperty{
               config_prefix.data(),
               shapes_prefix.data(),
               function_name.data(),
-              mlir_module.data(),
+              mlir_module_fingerprint,
               flattened_device_ids.data(),
               flattened_device_ids.size(),
               guaranteed_constants.size(),
@@ -125,7 +137,7 @@ TpuCompilationCacheKey CreateCompilationCacheKey(
               mesh_state.data(),
           });
   auto buffer_cleanup = gtl::MakeCleanup([result]() {
-    tpu::UtilApiFn()->TpuCompile_DestroyCompilationCacheKeyFn(result);
+    tpu::OpsApiFn()->TpuCompile_DestroyCompilationCacheKeyFn(result);
   });
   TpuCompilationCacheKey key;
   key.prefix = result.key;
