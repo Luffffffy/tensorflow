@@ -61,7 +61,6 @@ namespace {
 using DeadnessPredicate = DeadnessAnalysis::DeadnessPredicate;
 using jit::DeviceId;
 using jit::DeviceSet;
-using xla::StatusOr;
 
 // The clusters we create here are eventually lowered into an
 // _XlaCompile/_XlaRun pair with a TF executor "fallback" that uses the
@@ -1846,6 +1845,7 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
                                      "AvgPoolGrad",
                                      "BatchMatMul",
                                      "BatchMatMulV2",
+                                     "BatchMatMulV3",
                                      "BatchToSpace",
                                      "BatchToSpaceND",
                                      "BesselI0e",
