@@ -117,6 +117,27 @@ tf_cc_test(
 )
 
 tf_cc_test(
+    name = "gpu_spmd_partitioner_test",
+    srcs = ["gpu_spmd_partitioner_test.cc"],
+    deps = [
+        "//tensorflow/compiler/xla:util",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
+        "//tensorflow/compiler/xla/service:hlo",
+        "//tensorflow/compiler/xla/service:hlo_casting_utils",
+        "//tensorflow/compiler/xla/service:hlo_matchers",
+        "//tensorflow/compiler/xla/service:hlo_parser",
+        "//tensorflow/compiler/xla/service:hlo_pass_pipeline",
+        "//tensorflow/compiler/xla/service:hlo_verifier",
+        "//tensorflow/compiler/xla/service:rng_expander",
+        "//tensorflow/compiler/xla/service:sharding_propagation",
+        "//tensorflow/compiler/xla/service/gpu:gpu_spmd_partitioner",
+        "//tensorflow/compiler/xla/tests:hlo_test_base",
+        "//tensorflow/compiler/xla/tests:xla_internal_test_main",
+        "//tensorflow/core:test",
+    ],
+)
+
+tf_cc_test(
     name = "gemm_rewrite_test",
     srcs = [
         "gemm_rewrite_test.cc",
@@ -612,6 +633,7 @@ glob_lit_tests(
     driver = "@llvm-project//mlir:run_lit.sh",
     tags_override = {
         "reduction_vectorization_sm_all.hlo": ["no_rocm"],
+        "element_wise_row_vectorization.hlo": ["no_rocm"],
     },
     test_file_exts = [
         "hlo",

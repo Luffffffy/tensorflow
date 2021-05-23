@@ -787,6 +787,7 @@ package_group(
     packages = [
         "//learning/brain/keras/...",
         "//learning/brain/mlir/...",
+        "//learning/brain/tfrt/...",
         "//learning/lib/ami/simple_ml/...",
         "//tensorflow/...",
         "//tensorflow_decision_forests/...",
@@ -934,7 +935,7 @@ tf_cc_shared_object(
         "//tensorflow/c:env",
         "//tensorflow/c:kernels",
         "//tensorflow/c:logging",
-        "//tensorflow/c:ops_hdrs",
+        "//tensorflow/c:ops",
         "//tensorflow/cc/saved_model:loader_lite_impl",
         "//tensorflow/core/common_runtime:core_cpu_impl",
         "//tensorflow/core:framework_internal_impl",
