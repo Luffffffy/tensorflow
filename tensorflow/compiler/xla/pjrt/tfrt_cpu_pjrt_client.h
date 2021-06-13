@@ -159,6 +159,12 @@ class TfrtCpuClient final : public PjRtClient {
     LOG(FATAL) << "MakeCrossHostReceiveBuffers not implemented.";
   }
 
+  void MakeCrossHostReceiveBuffersForGather(
+      absl::Span<const Shape> shapes, std::vector<GatherDetails> gather_details,
+      PjRtDevice* device, PjRtCrossHostRecvNotifier&& notifier) override {
+    LOG(FATAL) << "MakeCrossHostReceiveBuffersForGather not implemented.";
+  }
+
   StatusOr<std::unique_ptr<PjRtBuffer>> CreateViewOfDeviceBuffer(
       void* device_ptr, const Shape& shape, PjRtDevice* device,
       std::function<void()> on_delete_callback) override;
@@ -173,8 +179,7 @@ class TfrtCpuClient final : public PjRtClient {
     return Unimplemented("CreateHostToDeviceChannelHandle not implemented.");
   }
 
-  Status Defragment(absl::Span<PjRtBuffer* const> buffers,
-                    absl::Span<PjRtExecutable* const> executables) override {
+  Status Defragment() override {
     return Unimplemented("Defragment not implemented.");
   }
 
@@ -397,8 +402,6 @@ class TfrtCpuBuffer final : public PjRtBuffer {
 
   StatusOr<Shape> logical_on_device_shape() override;
 
-  int64 OnDeviceSizeInBytes() const override;
-
   StatusOr<std::unique_ptr<ExternalReference>> AcquireExternalReference()
       override;
 
@@ -409,9 +412,7 @@ class TfrtCpuBuffer final : public PjRtBuffer {
   void ToLiteral(MutableLiteralBase* literal,
                  std::function<void(Status)> on_ready) override;
 
-  StatusOr<size_t> GetOnDeviceSizeInBytes() const override {
-    return Unimplemented("GetOnDeviceSizeInBytes not implemented");
-  }
+  StatusOr<size_t> GetOnDeviceSizeInBytes() const override;
 
   Status CopyRawToHost(void* dst, int64 offset, int64 transfer_size,
                        std::function<void(Status)> on_ready) override {
@@ -427,6 +428,12 @@ class TfrtCpuBuffer final : public PjRtBuffer {
 
   Status CopyToRemoteDevice(absl::string_view serialized_descriptor) override {
     return Unimplemented("CopyToRemoteDevice not implemented.");
+  }
+
+  Status CopyToRemoteDeviceScattered(
+      absl::Span<const std::string> serialized_descriptors,
+      const ScatterDetails& scatter_details) override {
+    return Unimplemented("CopyToRemoteDeviceScattered not implemented.");
   }
 
   Status BlockHostUntilReady() override;
