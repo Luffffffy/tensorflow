@@ -1259,7 +1259,7 @@ Status InlineFunctionCalls(const GrapplerItem& item,
       } else if (n->IsCaseNode()) {
         TF_RETURN_IF_ERROR(RewriteCaseNode(n, graph.get(), false));
       } else if (n->IsWhileNode()) {
-        TF_RETURN_IF_ERROR(RewriteWhileNode(n, graph.get(), false));
+        TF_RETURN_IF_ERROR(RewriteWhileNode(n, graph.get(), &flib_def, false));
       }
       continue;
     }
@@ -1515,12 +1515,6 @@ Status FunctionOptimizer::Optimize(Cluster*, const GrapplerItem& item,
   TF_RETURN_IF_ERROR(RunFunctionOptimizerPass(item, optimized_graph));
 
   return Status::OK();
-}
-
-void FunctionOptimizer::Feedback(Cluster* cluster, const GrapplerItem& item,
-                                 const GraphDef& optimized_graph,
-                                 double result) {
-  // Nothing to do for FunctionOptimizer.
 }
 
 }  // end namespace grappler

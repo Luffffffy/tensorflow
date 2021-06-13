@@ -441,7 +441,7 @@ class HLOClient_UnaryElementwiseOp<string mnemonic, list<OpTrait> traits,
     LogicalResult reifyReturnTypeShapes(OpBuilder& builder, ValueRange operands,
         SmallVectorImpl<Value>& reifiedReturnShapes) {
       return ::mlir::mhlo::deriveShapeFromFirstOperand(&builder, getOperation(),
-          &reifiedReturnShapes);
+          operands, &reifiedReturnShapes);
     }
   }];
 }
@@ -581,8 +581,8 @@ def HLOClient_TanOp : HLOClient_UnaryElementwiseOp<"tan",
 }
 
 def HLOClient_ConstantLikeOp : HLOClient_Op<"constant_like",
-    [NoSideEffect, SameOperandsAndResultShape,
-     InferTypeOpInterface,
+    [NoSideEffect, HLOClient_Broadcasting, HLOClient_BroadcastingElementwise,
+     SameOperandsAndResultShape, InferTypeOpInterface,
      DeclareOpInterfaceMethods<InferShapedTypeOpInterface,
          ["inferReturnTypeComponents"]>,
      NativeOpTrait<"InferTensorType">]> {

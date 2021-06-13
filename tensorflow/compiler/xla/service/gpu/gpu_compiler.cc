@@ -44,6 +44,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/all_gather_decomposer.h"
 #include "tensorflow/compiler/xla/service/all_reduce_combiner.h"
 #include "tensorflow/compiler/xla/service/all_to_all_decomposer.h"
+#include "tensorflow/compiler/xla/service/async_all_reduce_creator.h"
 #include "tensorflow/compiler/xla/service/batchnorm_expander.h"
 #include "tensorflow/compiler/xla/service/buffer_assignment.h"
 #include "tensorflow/compiler/xla/service/call_inliner.h"
@@ -118,6 +119,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/rng_bit_generator_expander.h"
 #include "tensorflow/compiler/xla/service/rng_expander.h"
 #include "tensorflow/compiler/xla/service/sharding_propagation.h"
+#include "tensorflow/compiler/xla/service/sharding_remover.h"
 #include "tensorflow/compiler/xla/service/slice_sinker.h"
 #include "tensorflow/compiler/xla/service/slow_operation_alarm.h"
 #include "tensorflow/compiler/xla/service/sort_simplifier.h"
@@ -160,10 +162,6 @@ GpuCompiler::GpuCompiler(se::Platform::Id platform_id,
 Status GpuCompiler::OptimizeHloModule(
     HloModule* hlo_module, se::StreamExecutor* stream_exec,
     se::DeviceMemoryAllocator* device_allocator) {
-  const int64 num_partitions = hlo_module->config().num_partitions();
-  const bool use_spmd =
-      hlo_module->config().use_spmd_partitioning() && num_partitions > 1;
-
   {
     HloPassPipeline pipeline("optimization");
     pipeline.AddInvariantChecker<HloVerifier>(/*layout_sensitive=*/false,
@@ -293,12 +291,18 @@ Status GpuCompiler::OptimizeHloModule(
     pipeline.AddPass<WhileLoopTripCountAnnotator>();
     TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
   }
-
-  if (use_spmd) {
+  if (hlo_module->config().use_spmd_partitioning()) {
     HloPassPipeline spmd_pipeline("spmd-partitioner");
-    spmd_pipeline.AddPass<ShardingPropagation>(/*is_spmd=*/true);
-    spmd_pipeline.AddPass<GpuSpmdPartitioner>(
-        num_partitions, hlo_module->config().replica_count());
+    const int64 num_partitions = hlo_module->config().num_partitions();
+    if (num_partitions > 1) {
+      spmd_pipeline.AddPass<ShardingPropagation>(/*is_spmd=*/true);
+      spmd_pipeline.AddPass<GpuSpmdPartitioner>(
+          num_partitions, hlo_module->config().replica_count());
+    } else {
+      // Remove redudant sharding ops when partition_count == 1.
+      spmd_pipeline.AddPass<ShardingRemover>();
+      spmd_pipeline.AddPass<HloDCE>();
+    }
     TF_RETURN_IF_ERROR(spmd_pipeline.Run(hlo_module).status());
   }
 
@@ -372,6 +376,12 @@ Status GpuCompiler::OptimizeHloModule(
     pipeline.AddPass<AllReduceCombiner>(
         /*combine_threshold_in_bytes=*/30 * 1024 * 1024,
         /*combine_threshold_count=*/256);
+    TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
+  }
+
+  if (hlo_module->config().debug_options().xla_gpu_enable_async_all_reduce()) {
+    HloPassPipeline pipeline("async_all_reduce_creator");
+    pipeline.AddPass<AsyncAllReduceCreator>();
     TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
   }
 
@@ -624,7 +634,9 @@ static Status CompileModuleToLlvmIrImpl(
   VLOG(1) << "Buffer Assignment Stats "
           << results->buffer_assignment->GetStats().ToString();
   DumpHloModuleIfEnabled(*hlo_module, *results->buffer_assignment,
-                         "after_optimizations");
+                         absl::StrCat("sm_", cuda_compute_capability->cc_major,
+                                      ".", cuda_compute_capability->cc_minor,
+                                      "_gpu_after_optimizations"));
 
   mlir::MLIRContext mlir_context;
   mlir_context.loadDialect<mlir::lmhlo::LmhloDialect, mlir::mhlo::MhloDialect,
@@ -870,11 +882,17 @@ GpuCompiler::CompileToTargetBinary(const HloModuleConfig& module_config,
     submodule_compile_results.push_back(result.second);
   }
 
-  TF_ASSIGN_OR_RETURN(
-      std::vector<uint8> backend_result,
-      this->LinkModules(stream_exec, std::move(submodule_compile_results)));
+  auto maybe_backend_result =
+      this->LinkModules(stream_exec, std::move(submodule_compile_results));
+  if (!maybe_backend_result.ok()) {
+    LOG(ERROR) << "The CUDA linking API did not work. Please use "
+                  "XLA_FLAGS=--xla_gpu_force_compilation_parallelism=1 to "
+                  "bypass it, but expect to get longer compilation time due to "
+                  "the lack of multi-threading.";
+    return maybe_backend_result.status();
+  }
 
-  return std::make_pair(ptx_snippets, backend_result);
+  return std::make_pair(ptx_snippets, std::move(*maybe_backend_result));
 }
 
 StatusOr<std::unique_ptr<Executable>> GpuCompiler::RunBackend(
@@ -1140,21 +1158,10 @@ StatusOr<std::unique_ptr<Executable>> CompileLmhloToExecutable(
 
   TF_ASSIGN_OR_RETURN(auto ir_emitter, IrEmitterUnnested::Create(
                                            module_config, ir_emitter_context));
-  ThunkSequence thunk_sequence;
-  for (mlir::Operation& op :
-       entry_function.getBody().front().without_terminator()) {
-    MlirEmitterInput input;
-    input.op = &op;
-    TF_RETURN_IF_ERROR(ir_emitter->EmitOp(input));
-    std::unique_ptr<ThunkSequence> thunks = ir_emitter->ConsumeThunkSequence();
-    TF_RET_CHECK(thunks->size() <= 1);
-    if (!thunks->empty()) {
-      auto thunk = std::move(thunks->front());
-      thunk_sequence.push_back(std::move(thunk));
-    }
-  }
-  auto thunk_schedule = absl::make_unique<ThunkSchedule>(
-      std::make_unique<ThunkSequence>(std::move(thunk_sequence)));
+  TF_RETURN_IF_ERROR(ir_emitter->EmitLmhloRegion(&entry_function.body()));
+
+  auto thunk_schedule =
+      absl::make_unique<ThunkSchedule>(ir_emitter->ConsumeThunkSequence());
 
   using BackendCompileResult = std::pair<std::string, std::vector<uint8>>;
   TF_ASSIGN_OR_RETURN(BackendCompileResult backend_result,

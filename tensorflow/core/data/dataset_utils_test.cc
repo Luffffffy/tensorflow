@@ -627,9 +627,6 @@ GetOptimizationsTestCase GetOptimizationTestCase3() {
 GetOptimizationsTestCase GetOptimizationTestCase4() {
   Options options;
   options.set_deterministic(false);
-  options.mutable_optimization_options()
-      ->mutable_map_vectorization()
-      ->set_enabled(true);
   options.mutable_optimization_options()->set_autotune_buffers(true);
   options.mutable_optimization_options()->set_filter_fusion(true);
   options.mutable_optimization_options()->set_filter_with_random_uniform_fusion(
@@ -650,8 +647,8 @@ GetOptimizationsTestCase GetOptimizationTestCase4() {
            "filter_fusion", "filter_with_random_uniform_fusion",
            "hoist_random_uniform", "make_sloppy", "map_and_batch_fusion",
            "map_and_filter_fusion", "map_fusion", "map_parallelization",
-           "map_vectorization", "noop_elimination", "parallel_batch",
-           "reorder_data_discarding_ops", "shuffle_and_repeat_fusion", "slack"},
+           "noop_elimination", "parallel_batch", "reorder_data_discarding_ops",
+           "shuffle_and_repeat_fusion", "slack"},
           /*expected_disabled=*/{},
           /*expected_default=*/{}};
 }
@@ -663,7 +660,7 @@ TEST_P(GetOptimizationsTest, DatasetUtils) {
   const GetOptimizationsTestCase test_case = GetParam();
   auto options = test_case.options;
 
-  std::vector<tstring> actual_enabled, actual_disabled, actual_default;
+  absl::flat_hash_set<tstring> actual_enabled, actual_disabled, actual_default;
   GetOptimizations(options, &actual_enabled, &actual_disabled, &actual_default);
 
   EXPECT_THAT(std::vector<string>(actual_enabled.begin(), actual_enabled.end()),
@@ -682,10 +679,10 @@ INSTANTIATE_TEST_SUITE_P(Test, GetOptimizationsTest,
                                            GetOptimizationTestCase4()));
 
 struct SelectOptimizationsTestCase {
-  std::vector<string> experiments;
-  std::vector<tstring> optimizations_enabled;
-  std::vector<tstring> optimizations_disabled;
-  std::vector<tstring> optimizations_default;
+  absl::flat_hash_set<string> experiments;
+  absl::flat_hash_set<tstring> optimizations_enabled;
+  absl::flat_hash_set<tstring> optimizations_disabled;
+  absl::flat_hash_set<tstring> optimizations_default;
   std::vector<string> expected;
 };
 
