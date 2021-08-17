@@ -606,21 +606,8 @@ TfLiteStatus ParseOpDataTfLite(const Operator* op, BuiltinOperator op_type,
       return kTfLiteOk;
     }
     case BuiltinOperator_UNIDIRECTIONAL_SEQUENCE_LSTM: {
-      auto params =
-          safe_allocator.Allocate<TfLiteUnidirectionalSequenceLSTMParams>();
-      TF_LITE_ENSURE(error_reporter, params != nullptr);
-      if (const auto* seq_lstm_params =
-              op->builtin_options_as_UnidirectionalSequenceLSTMOptions()) {
-        params->activation =
-            ConvertActivation(seq_lstm_params->fused_activation_function());
-        params->cell_clip = seq_lstm_params->cell_clip();
-        params->proj_clip = seq_lstm_params->proj_clip();
-        params->time_major = seq_lstm_params->time_major();
-        params->asymmetric_quantize_inputs =
-            seq_lstm_params->asymmetric_quantize_inputs();
-      }
-      *builtin_data = params.release();
-      return kTfLiteOk;
+      return ParseUnidirectionalSequenceLSTM(op, error_reporter, allocator,
+                                             builtin_data);
     }
     case BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM: {
       auto params =
@@ -793,6 +780,21 @@ TfLiteStatus ParseOpDataTfLite(const Operator* op, BuiltinOperator op_type,
       *builtin_data = params.release();
       return kTfLiteOk;
     }
+    case BuiltinOperator_VAR_HANDLE: {
+      auto params = safe_allocator.Allocate<TfLiteVarHandleParams>();
+      TF_LITE_ENSURE(error_reporter, params != nullptr);
+      params->container = nullptr;
+      params->shared_name = nullptr;
+      if (const auto* var_handle_params =
+              op->builtin_options_as_VarHandleOptions()) {
+        if (var_handle_params->container())
+          params->container = var_handle_params->container()->c_str();
+        if (var_handle_params->shared_name())
+          params->shared_name = var_handle_params->shared_name()->c_str();
+      }
+      *builtin_data = params.release();
+      return kTfLiteOk;
+    }
     // Below are the ops with no builtin_data structure.
     // TODO(aselle): Implement call in BuiltinOptions, but nullptrs are
     // ok for now, since there is no call implementation either.
@@ -829,6 +831,9 @@ TfLiteStatus ParseOpDataTfLite(const Operator* op, BuiltinOperator op_type,
     case BuiltinOperator_HASHTABLE_FIND:
     case BuiltinOperator_HASHTABLE_IMPORT:
     case BuiltinOperator_HASHTABLE_SIZE:
+    case BuiltinOperator_READ_VARIABLE:
+    case BuiltinOperator_ASSIGN_VARIABLE:
+    case BuiltinOperator_BROADCAST_ARGS:
       return kTfLiteOk;
     case BuiltinOperator_PLACEHOLDER_FOR_GREATER_OP_CODES:
       return kTfLiteError;
@@ -1940,6 +1945,29 @@ TfLiteStatus ParseSplitV(const Operator* op, ErrorReporter* error_reporter,
     // better undertand the ramifications of changing the legacy behavior.
   }
 
+  *builtin_data = params.release();
+  return kTfLiteOk;
+}
+
+TfLiteStatus ParseUnidirectionalSequenceLSTM(const Operator* op,
+                                             ErrorReporter* error_reporter,
+                                             BuiltinDataAllocator* allocator,
+                                             void** builtin_data) {
+  CheckParsePointerParams(op, error_reporter, allocator, builtin_data);
+  SafeBuiltinDataAllocator safe_allocator(allocator);
+  auto params =
+      safe_allocator.Allocate<TfLiteUnidirectionalSequenceLSTMParams>();
+  TF_LITE_ENSURE(error_reporter, params != nullptr);
+  if (const auto* seq_lstm_params =
+          op->builtin_options_as_UnidirectionalSequenceLSTMOptions()) {
+    params->activation =
+        ConvertActivation(seq_lstm_params->fused_activation_function());
+    params->cell_clip = seq_lstm_params->cell_clip();
+    params->proj_clip = seq_lstm_params->proj_clip();
+    params->time_major = seq_lstm_params->time_major();
+    params->asymmetric_quantize_inputs =
+        seq_lstm_params->asymmetric_quantize_inputs();
+  }
   *builtin_data = params.release();
   return kTfLiteOk;
 }

@@ -31,17 +31,14 @@ namespace gpu {
 // Return whether --//...:enable_bef_thunk was specified on the command line.
 bool IsBefThunkEnabled();
 
-// Sets the context to use when executing BEF thunks.
-void SetExecutionContext(const tfrt::ExecutionContext* exec_ctx);
-
 // Creates a Thunk that uses TFRT BEF execution to perform the work of various
 // Thunk types. A BefThunk is not restricted to a particular op function, unlike
 // GemmThunk, ConvolutionThunk, etc. Rather, a BefThunk is to stand in place of
 // an other Thunk type.
 StatusOr<std::unique_ptr<Thunk>> CreateBefThunk(
     Thunk::ThunkInfo thunk_info, mlir::Operation* op,
-    std::vector<BufferAllocation::Slice> inputs,
-    std::vector<BufferAllocation::Slice> outputs);
+    absl::Span<const BufferAllocation::Slice> inputs,
+    absl::Span<const BufferAllocation::Slice> outputs);
 
 }  // namespace gpu
 }  // namespace xla

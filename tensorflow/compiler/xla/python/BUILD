@@ -6,6 +6,9 @@ load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 # buildifier: disable=same-origin-load
 load("//tensorflow:tensorflow.bzl", "pybind_extension")
 
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "pytype_library")
+
 package(
     default_visibility = [
         "//learning/pathways/data_parallel/jax:__subpackages__",
@@ -14,12 +17,15 @@ package(
     licenses = ["notice"],
 )
 
-py_library(
+pytype_library(
     name = "xla_client",
     srcs = ["xla_client.py"],
     srcs_version = "PY3",
     visibility = ["//visibility:public"],
-    deps = [":xla_extension"],
+    deps = [
+        ":xla_extension",
+        "@absl_py//absl/logging",
+    ],
 )
 
 cc_library(
@@ -113,6 +119,22 @@ py_test(
 )
 
 cc_library(
+    name = "status_casters",
+    hdrs = ["status_casters.h"],
+    compatible_with = [],
+    copts = [
+        "-fexceptions",
+        "-fno-strict-aliasing",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        "//tensorflow/compiler/xla:status",
+        "//tensorflow/compiler/xla:statusor",
+        "@pybind11",
+    ],
+)
+
+cc_library(
     name = "types",
     srcs = ["types.cc"],
     hdrs = ["types.h"],
@@ -124,6 +146,7 @@ cc_library(
     features = ["-use_header_modules"],
     deps = [
         ":absl_casters",
+        ":status_casters",
         "//tensorflow/compiler/xla:literal",
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla:status",
@@ -185,12 +208,14 @@ cc_library(
         "py_client.cc",
         "py_executable.cc",
         "py_values.cc",
+        "sharded_device_array.cc",
     ],
     hdrs = [
         "py_buffer.h",
         "py_client.h",
         "py_executable.h",
         "py_values.h",
+        "sharded_device_array.h",
     ],
     compatible_with = [],
     copts = [
@@ -207,8 +232,12 @@ cc_library(
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla:xla_data_proto_cc",
+        "//tensorflow/compiler/xla/client:xla_builder",
         "//tensorflow/compiler/xla/pjrt:pjrt_client",
+        "//tensorflow/compiler/xla/pjrt:transpose",
+        "//tensorflow/compiler/xla/service:custom_call_target_registry",
         "//tensorflow/core/platform:fingerprint",
+        "//tensorflow/core/platform:statusor",
         "//tensorflow/core/profiler:protos_all_cc",
         "//tensorflow/core/profiler/lib:traceme",
         "//tensorflow/python/lib/core:numpy_lib",
@@ -219,6 +248,7 @@ cc_library(
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:span",
+        "@com_google_absl//absl/types:variant",
         "@pybind11",
     ],
 )
@@ -262,7 +292,6 @@ cc_library(
     features = ["-use_header_modules"],
     visibility = ["//visibility:private"],
     deps = [
-        ":lru_cache",
         ":py_client",
         ":python_ref_manager",
         ":pytree",
@@ -272,6 +301,7 @@ cc_library(
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla:xla_data_proto_cc",
+        "//tensorflow/compiler/xla/pjrt:lru_cache",
         "//tensorflow/compiler/xla/pjrt:pjrt_client",
         "//tensorflow/core/platform:status",
         "//tensorflow/core/profiler/lib:traceme",
@@ -282,6 +312,7 @@ cc_library(
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:optional",
+        "@com_google_absl//absl/types:span",
         "@pybind11",
     ],
 )
@@ -351,8 +382,11 @@ cc_library(
         ":py_client",
         ":types",
         "//tensorflow/compiler/xla:xla_data_proto_cc",
+        "//tensorflow/compiler/xla/pjrt:pjrt_client",
         "//tensorflow/core/platform:logging",
+        "@com_google_absl//absl/hash",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:span",
@@ -524,6 +558,7 @@ pybind_extension(
         ":xla_compiler",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
         "@pybind11",
         "//third_party/python_runtime:headers",  # buildcleaner: keep
         "//tensorflow/compiler/xla:literal",
@@ -556,26 +591,4 @@ pybind_extension(
         ],
         "//conditions:default": [],
     }),
-)
-
-cc_library(
-    name = "lru_cache",
-    hdrs = ["lru_cache.h"],
-    deps = [
-        "//tensorflow/core/platform:logging",
-        "@com_google_absl//absl/container:node_hash_map",
-        "@com_google_absl//absl/types:optional",
-    ],
-)
-
-tf_cc_test(
-    name = "lru_cache_test",
-    srcs = ["lru_cache_test.cc"],
-    deps = [
-        ":lru_cache",
-        "//tensorflow/compiler/xla:test",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:test_main",
-        "//tensorflow/core/platform:logging",
-    ],
 )

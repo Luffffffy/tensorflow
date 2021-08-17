@@ -19,7 +19,7 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
-#include <fp16.h>
+#include "fp16.h"  // from @FP16
 #include "absl/container/flat_hash_map.h"
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
@@ -101,7 +101,7 @@ class ObjectReader {
           std::transform(out.begin(), out.end(), tensor->data.begin(),
                          [](const Eigen::half& x) {
                            return fp16_ieee_to_fp32_value(
-                               Eigen::half_impl::raw_half_as_uint16(x));
+                               Eigen::numext::bit_cast<uint16_t>(x));
                          });
           break;
         }
