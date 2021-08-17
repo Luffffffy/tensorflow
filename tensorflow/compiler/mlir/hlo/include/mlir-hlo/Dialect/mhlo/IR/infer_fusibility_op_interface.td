@@ -21,8 +21,8 @@ limitations under the License.
 
 include "mlir/IR/OpBase.td"
 
-// OpInterface to query if an op is fusible and to query the shape equality
-// constraint among the inputs and outputs of an op.
+// OpInterface to query the shape equality constraint among the inputs and
+// outputs of an op.
 def InferFusibilityOpInterface : OpInterface<"InferFusibilityOpInterface"> {
   let description = [{
     Interface to query if an op is fusible and to query the shape equality
@@ -30,30 +30,6 @@ def InferFusibilityOpInterface : OpInterface<"InferFusibilityOpInterface"> {
   }];
 
   let methods = [
-    InterfaceMethod<
-      /*desc=*/[{If true, this op can be fused with its operands
-      }],
-      /*retTy=*/"bool",
-      /*methodName=*/"isFusibleWithOperand",
-      /*args=*/(ins),
-      /*methodBody=*/[{}],
-      /*defaultImplementation=*/[{
-        /// Returns whether this op can be fused with its operands
-        return true;
-      }]
-    >,
-    InterfaceMethod<
-      /*desc=*/[{If true, this op can be fused with its consumers
-      }],
-      /*retTy=*/"bool",
-      /*methodName=*/"isFusibleWithConsumer",
-      /*args=*/(ins),
-      /*methodBody=*/[{}],
-      /*defaultImplementation=*/[{
-        /// Return whether this op can be fused with its consumers
-        return true;
-      }]
-    >,
     InterfaceMethod<
       /*desc=*/"Return whether two inputs have the same shape (assuming no"
                "implicit broadcasting).",
@@ -66,7 +42,7 @@ def InferFusibilityOpInterface : OpInterface<"InferFusibilityOpInterface"> {
         Operation *op = this->getOperation();
         assert(lhs >= 0 && rhs >= 0);
         if (lhs == rhs) return true;
-        return inferShapeEquality(op->getOperand(lhs), op->getOperand(rhs));
+        return InferFusibilityOpInterface::inferShapeEquality(op->getOperand(lhs), op->getOperand(rhs));
       }]
     >,
     InterfaceMethod<
@@ -81,7 +57,7 @@ def InferFusibilityOpInterface : OpInterface<"InferFusibilityOpInterface"> {
         Operation *op = this->getOperation();
         assert(lhs >= 0 && rhs >= 0);
         if (lhs == rhs) return true;
-        return inferShapeEquality(op->getResult(lhs), op->getResult(rhs));
+        return InferFusibilityOpInterface::inferShapeEquality(op->getResult(lhs), op->getResult(rhs));
       }]
     >,
     InterfaceMethod<
@@ -95,28 +71,7 @@ def InferFusibilityOpInterface : OpInterface<"InferFusibilityOpInterface"> {
         /// Return whether the input and the output have the same shape.
         Operation *op = this->getOperation();
         assert(input >= 0 && output >= 0);
-        return inferShapeEquality(op->getOperand(input), op->getResult(output));
-      }]
-    >,
-    InterfaceMethod<
-      /*desc=*/[{Return the effective workload shape for the operation.
-
-      Here the effective workload shape roughly represents the maximum
-      parallelism can be used during the codegen stage. It's used to check
-      the shape-compatibility of the operation. During fusion, we only
-      try to fuse shape-compatible ops for performance.
-      For example, the effective workload shape of an elementwise op is its
-      output shape, while the effective workload shape of a reduction op may
-      be its operand shape.
-      Return None if such an inference is not possible.
-      }],
-      /*retTy=*/"llvm::Optional<Value>",
-      /*methodName=*/"inferEffectiveWorkloadShape",
-      /*args=*/(ins),
-      /*methodBody=*/[{}],
-      /*defaultImplementation=*/[{
-        /// Return effective workload size if possible, otherwise None.
-        return {};
+        return InferFusibilityOpInterface::inferShapeEquality(op->getOperand(input), op->getResult(output));
       }]
     >,
   ];

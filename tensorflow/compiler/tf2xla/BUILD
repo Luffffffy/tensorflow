@@ -38,7 +38,6 @@ package_group(
     name = "friends",
     includes = [":internal"],
     packages = [
-        "//learning/brain/tools/tf_replay/...",
         "//tensorflow/...",
         "//tensorflow_models/...",
         "//third_party/mlir_edge/model_curriculum/iree/...",
@@ -366,6 +365,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow:compile_mlir_util_no_tf_dialect_passes",
         "//tensorflow/compiler/xla/client:value_inference",
         "//tensorflow/compiler/xla/service:computation_placer_hdr",
+        "//tensorflow/compiler/xla:executable_run_options",
         "//tensorflow/compiler/xla:protobuf_util",
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla:status_macros",
@@ -536,6 +536,7 @@ cc_library(
         ":common",
         ":host_compute_metadata_proto_cc",
         "//tensorflow/compiler/tf2xla/lib:util",
+        "//tensorflow/compiler/xla:executable_run_options",
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla/client:xla_builder",
         "//tensorflow/compiler/xla/client:xla_computation",
@@ -543,6 +544,7 @@ cc_library(
         "//tensorflow/compiler/xla/client/lib:constants",
         "//tensorflow/compiler/xla/service:computation_placer_hdr",
         "//tensorflow/compiler/xla/service:hlo",
+        "//tensorflow/compiler/xla/service/gpu:gpu_executable_run_options",
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
@@ -1119,6 +1121,9 @@ tf_cuda_cc_test(
     name = "fused_batchnorm_reserve_space_test",
     size = "medium",
     srcs = ["fused_batchnorm_reserve_space_test.cc"],
+    tags = [
+        "no_cuda_asan",  # TODO(b/193450885)
+    ],
     deps = [
         "//tensorflow/cc:cc_ops",
         "//tensorflow/cc:ops",
