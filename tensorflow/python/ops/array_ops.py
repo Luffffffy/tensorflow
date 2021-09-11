@@ -23,6 +23,7 @@ import numbers
 import numpy as np
 
 from tensorflow.python.eager import context
+from tensorflow.python.eager import tape
 from tensorflow.python.framework import common_shapes
 from tensorflow.python.framework import composite_tensor
 from tensorflow.python.framework import constant_op
@@ -2979,6 +2980,7 @@ def zeros(shape, dtype=dtypes.float32, name=None):
 
 
 @tf_export(v1=["zeros_like"])
+@dispatch.register_unary_elementwise_api
 @dispatch.add_dispatch_support
 def zeros_like(tensor, dtype=None, name=None, optimize=True):
   """Creates a tensor with all elements set to zero.
@@ -3018,6 +3020,7 @@ def zeros_like(tensor, dtype=None, name=None, optimize=True):
 
 
 @tf_export("zeros_like", v1=[])
+@dispatch.register_unary_elementwise_api
 @dispatch.add_dispatch_support
 def zeros_like_v2(
     input,  # pylint: disable=redefined-builtin
@@ -3094,6 +3097,7 @@ def zeros_like_impl(tensor, dtype, name, optimize=True):
 
 
 @tf_export(v1=["ones_like"])
+@dispatch.register_unary_elementwise_api
 @dispatch.add_dispatch_support
 def ones_like(tensor, dtype=None, name=None, optimize=True):
   """Creates a tensor with all elements set to 1.
@@ -3127,6 +3131,7 @@ def ones_like(tensor, dtype=None, name=None, optimize=True):
 
 
 @tf_export("ones_like", v1=[])
+@dispatch.register_unary_elementwise_api
 @dispatch.add_dispatch_support
 def ones_like_v2(
     input,  # pylint: disable=redefined-builtin
@@ -4906,12 +4911,12 @@ def reverse_sequence_v2(input,
 
 
 @tf_export(v1=["gather"])
+@dispatch.add_dispatch_support
 @deprecation.deprecated_args(None,
                              ("The `validate_indices` argument has no effect. "
                               "Indices are always validated on CPU and never "
                               "validated on GPU."),
                              ("validate_indices", None))
-@dispatch.add_dispatch_support
 def gather(params,
            indices,
            validate_indices=None,
@@ -6679,3 +6684,38 @@ def guarantee_const(input, name=None):    # pylint: disable=redefined-builtin
     A `Tensor`. Has the same dtype as `input`.
   """
   return gen_array_ops.guarantee_const(input=input, name=name)
+
+
+@tf_export("stop_gradient")
+@dispatch.add_dispatch_support
+def stop_gradient(input, name=None):  # pylint: disable=redefined-builtin
+  """Stops gradient computation.
+
+  NOTE: This docstring is patched out below. See
+  tensorflow/core/api_def/base_api/api_def_StopGradient.pbtxt for the full
+  docstring. That file determines the public documentation page.
+
+  Args:
+    input: A `Tensor`.
+    name: A name for this operation.
+
+  Returns:
+    A `Tensor`. Has the same dtype as `input`.
+  """
+  # The StopGradient op has a gradient function registered which returns None
+  # (meaning statically known to be zero). For correctness, that's all we
+  # need. However, tf.GradientTape often makes decisions about what to keep in
+  # memory based on which forward-pass tensors are currently being watched, and
+  # returning None in a gradient is not sufficient to stop watching a tensor
+  # since the backward function doesn't run in the forward pass. Pausing the
+  # tape around this op instructs any tf.GradientTapes to ignore the
+  # forward-pass output of StopGradient, which may be much more efficient.
+  with tape.stop_recording():
+    return gen_array_ops.stop_gradient(input, name=name)
+
+
+stop_gradient.__doc__ = gen_array_ops.stop_gradient.__doc__
+
+
+# Register elementwise ops that don't have Python wrappers.
+dispatch.register_unary_elementwise_api(gen_array_ops.check_numerics)

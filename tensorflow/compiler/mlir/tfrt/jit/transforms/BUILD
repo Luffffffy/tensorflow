@@ -47,6 +47,8 @@ cc_library(
         "tf_cpurt_fission.cc",
         "tf_cpurt_matmul_specialization.cc",
         "tf_cpurt_passes.cc",
+        "tf_cpurt_peel_tiled_loops.cc",
+        "tf_cpurt_symbolic_shape_optimization.cc",
     ],
     hdrs = ["tf_cpurt_passes.h"],
     deps = [
@@ -74,8 +76,11 @@ cc_library(
         "@llvm-project//mlir:ShapeTransforms",
         "@llvm-project//mlir:StandardOps",
         "@llvm-project//mlir:StandardOpsTransforms",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:TensorTransforms",
         "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:VectorOps",
     ],
     alwayslink = 1,
 )

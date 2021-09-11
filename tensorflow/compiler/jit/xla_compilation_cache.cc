@@ -278,6 +278,7 @@ Status XlaSingleOpToHlo(XlaCompiler* compiler,
   TF_ASSIGN_OR_RETURN(auto graph, CreateGraph(node_def, args, result_dtypes));
 
   auto compile_with_old_bridge = [&]() {
+    *compilation_result = {};
     return compiler->CompileGraph(compile_options, node_def.name(),
                                   std::move(graph), args, compilation_result);
   };
@@ -314,10 +315,9 @@ Status XlaSingleOpToHlo(XlaCompiler* compiler,
     return mlir_result;
   }
 
-  LOG_FIRST_N(WARNING, 5)
-      << "Failed second phase of the MLIR bridge. Will "
-         "retry with the old bridge. MLIR bridge compilation status: "
-      << mlir_result;
+  VLOG(2) << "Failed second phase of the MLIR bridge. Will "
+             "retry with the old bridge. MLIR bridge compilation status: "
+          << mlir_result;
   return compile_with_old_bridge();
 }
 

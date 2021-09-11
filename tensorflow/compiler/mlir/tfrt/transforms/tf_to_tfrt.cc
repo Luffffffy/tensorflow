@@ -202,7 +202,7 @@ class FallbackExecuteOpConversion : public mlir::ConversionPattern {
     return !llvm::isa<
         mlir::TF::_TfrtSetResourceOp, mlir::TF::_TfrtGetResourceOp,
         mlir::TF::_TPUCompileMlirOp, mlir::TF::TPUCompileSucceededAssertOp,
-        mlir::TF::TPUExecuteOp,
+        mlir::TF::TPUExecuteOp, mlir::TF::TPUCompileMlirAndExecuteOp,
         // Specifically handle control flow ops.
         mlir::TF::CaseOp, mlir::TF::IfOp, mlir::TF::WhileOp,
         mlir::TF::StatefulPartitionedCallOp, mlir::TF::PartitionedCallOp>(op);
@@ -912,7 +912,8 @@ class TFRTCallOpConversion : public mlir::OpConversionPattern<CallOp> {
     }
 
     auto new_op = rewriter.create<tfrt::compiler::CallOp>(
-        op.getLoc(), result_types, callee.getRootReference(), new_operands);
+        op.getLoc(), result_types, callee.getRootReference().getValue(),
+        new_operands);
     rewriter.replaceOp(op, new_op.getResults().drop_front());
 
     if (!mlir::MemoryEffectOpInterface::hasNoEffect(op)) {
@@ -2030,8 +2031,10 @@ LogicalResult OutlineCpuRtClustersPass::OutlineClusterOp(
   // Replace device cluster with a cpurt.call operation.
   auto module_name = *compiled_module.module.sym_name();
   auto func_name = compiled_func.sym_name();
-  auto func_flat_ref = builder.getSymbolRefAttr(func_name);
-  auto func_ref = builder.getSymbolRefAttr(module_name, {func_flat_ref});
+  auto func_flat_ref =
+      mlir::SymbolRefAttr::get(builder.getContext(), func_name);
+  auto func_ref = mlir::SymbolRefAttr::get(builder.getContext(), module_name,
+                                           {func_flat_ref});
 
   auto cluster_func_op = builder.create<tfrt::cpu::jit::CallOp>(
       loc, cluster.getResultTypes(), func_ref,
@@ -2205,6 +2208,14 @@ void CreateTFExecutorToTFPipeline(mlir::OpPassManager &pm,
 
   if (parsed_name.has_type && parsed_name.type == DEVICE_CPU)
     pm.addNestedPass<mlir::FuncOp>(mlir::TF::CreateFusedKernelMatcherPass());
+
+  if (options.tpu_fuse_ops) {
+    pm.addNestedPass<mlir::FuncOp>(
+        tfrt_compiler::CreateFuseTpuCompileAndExecutePass());
+    // Remove ops for the input to _TPUCompileMlirOp, which are no longer needed
+    // after CreateFuseTpuCompileAndExecutePass
+    pm.addNestedPass<mlir::FuncOp>(mlir::createCanonicalizerPass());
+  }
 
   pm.addPass(CreateLowerTFSavedModelPass(options.hoist_invariant_ops));
 }
