@@ -21,6 +21,7 @@ limitations under the License.
 #include <utility>
 
 #include "mlir/ExecutionEngine/CRunnerUtils.h"
+#include "mlir/Transforms/Bufferize.h"
 #include "tensorflow/compiler/mlir/tensorflow/dialect_registration.h"
 #include "tensorflow/compiler/mlir/tfrt/jit/tf_cpurt_pipeline.h"
 #include "tensorflow/core/platform/dynamic_annotations.h"
@@ -73,8 +74,9 @@ TfCpurtExecutor::Handle TfCpurtExecutor::Compile(
   // Create an async task for each worker thread.
   opts.num_worker_threads = 4;
   opts.register_dialects = mlir::RegisterAllTensorFlowDialects;
-  opts.register_pass_pipeline = CreateTfCpuRtPipeline;
+  opts.register_pass_pipeline = CreateDefaultTfCpuRtPipeline;
   opts.specialization = specialization;
+  opts.type_converter = mlir::BufferizeTypeConverter();
 
   // Instantiate new JitExecutable from the MLIR source.
   llvm::Expected<JitExecutable> jit_executable =
@@ -296,7 +298,10 @@ std::vector<py::array> TfCpurtExecutor::Execute(
   for (auto& result : result_storage) {
     if (result->IsError())
       throw std::runtime_error(StrCat("result error: ", result->GetError()));
-    ret_values.emplace_back(result->get<py::array>());
+    py::array& result_array = result->get<py::array>();
+    TF_ANNOTATE_MEMORY_IS_INITIALIZED(result_array.data(),
+                                      result_array.nbytes());
+    ret_values.emplace_back(result_array);
   }
 
   return ret_values;

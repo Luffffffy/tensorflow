@@ -482,6 +482,14 @@ class Interpreter {
   /// to disable multithreading, which is equivalent to setting num_threads
   /// to 1. If set to the value -1, the number of threads used will be
   /// implementation-defined and platform-dependent.
+  ///
+  /// As TfLite interpreter could internally apply a TfLite delegate by default
+  /// (i.e. XNNPACK), the number of threads that are available to the default
+  /// delegate *should be* set via InterpreterBuilder APIs as follows:
+  /// std::unique_ptr<tflite::Interpreter> interpreter;
+  /// tflite::InterpreterBuilder builder(tflite model, op resolver);
+  /// builder.SetNumThreads(...)
+  /// ASSERT_EQ(builder(&interpreter), kTfLiteOk);
   TfLiteStatus SetNumThreads(int num_threads);
 
   /// Allow float16 precision for FP32 calculation when possible.
@@ -640,9 +648,9 @@ class Interpreter {
   // `flags` is a bitmask, see TfLiteCustomAllocationFlags.
   // The runtime does NOT take ownership of the underlying memory.
   //
-  // NOTE: User needs to call AllocateTensors() after this. In case of input
-  // resizing, buffers will be checked for required data size during
-  // AllocateTensors().
+  // NOTE: User needs to call AllocateTensors() after this.
+  // Invalid/insufficient buffers will cause an error during AllocateTensors or
+  // Invoke (in case of dynamic shapes in the graph).
   //
   // Parameters should satisfy the following conditions:
   // 1. tensor->allocation_type == kTfLiteArenaRw or kTfLiteArenaRwPersistent
@@ -754,6 +762,9 @@ class Interpreter {
 
   // Returns true if delegates have been applied.
   bool HasDelegates();
+
+  // Returns true if the model has been fully delegated.
+  bool IsFullyDelegated() const;
 
   // Returns true if cancellation function returns true.
   bool IsCancelled();

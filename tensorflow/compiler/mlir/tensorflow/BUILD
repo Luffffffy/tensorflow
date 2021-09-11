@@ -24,6 +24,7 @@ package_group(
         "//tensorflow/cc/...",
         "//tensorflow/python/...",
         "//tensorflow/tools/pip_package/...",
+        "//tensorflow/tools/...",
     ] + if_google([
         "//learning/brain/experimental/mlir/tflite/tfmrt/...",
         "//learning/brain/experimental/dtensor/...",
@@ -32,11 +33,13 @@ package_group(
         # Allow visibility from the mlir language server.
         "//learning/brain/mlir/mlir_lsp_server/...",
         "//learning/brain/mobile/lite/tf_runtime/...",
+        "//learning/pathways/data_parallel/serving/...",
         "//learning/pathways/data_parallel/tf2xla/...",
         "//learning/serving/contrib/tfrt/mlir/...",
         "//platforms/darwinn/contrib/waymo/...",
         "//platforms/xla/sparse_core/...",
         "//waymo/ml/compiler/...",
+        "//research/language_modeling/sentence_explorer/ondevice/...",
     ]),
 )
 
@@ -1073,7 +1076,6 @@ cc_library(
         "transforms/device_index_selector.cc",
         "transforms/drop_while_shape_invariant.cc",
         "transforms/einsum.cc",
-        "transforms/ensure_static_shapes_pass.cc",
         "transforms/executor_island_coarsening.cc",
         "transforms/executor_tpuv1_inline_tpu_island.cc",
         "transforms/executor_tpuv1_island_coarsening.cc",
@@ -1121,7 +1123,6 @@ cc_library(
         "transforms/test_resource_alias_analysis.cc",
         "transforms/tf_data_optimization_pass.cc",
         "transforms/tf_device_assignment.cc",
-        "transforms/tf_device_replication_pass.cc",
         "transforms/tpu_cluster_cleanup_attributes.cc",
         "transforms/tpu_cluster_formation.cc",
         "transforms/tpu_colocate_composite_resource_ops.cc",
@@ -1902,6 +1903,7 @@ COMPILE_MLIR_UTIL_DEPS = [
     "//tensorflow/compiler/mlir/xla:mlir_hlo_to_hlo",
     "//tensorflow/compiler/mlir/xla:xla_passes",
     "//tensorflow/compiler/mlir/xla:type_to_shape",
+    "//tensorflow/compiler/mlir/xla:adjust_layout",
     "//tensorflow/compiler/mlir/xla:xla_legalize_tf",
     "//tensorflow/compiler/mlir/xla:xla_legalize_tf_with_tf2xla",
     "//tensorflow/compiler/tf2xla:common",

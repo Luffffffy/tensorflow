@@ -23,6 +23,7 @@ limitations under the License.
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_device.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_dialect.h"
 
@@ -37,11 +38,18 @@ std::unique_ptr<mlir::FunctionPass> CreateLinalgTrivialCopyRemovalPass();
 // Pass to tile, promote and vectorize linalg.matmul on buffers.
 std::unique_ptr<mlir::FunctionPass> CreateCodegenStrategyForMatMulPass();
 
+// Pass to optimize padding in tiled loops by peeling the final loop iteration.
+std::unique_ptr<mlir::FunctionPass> CreatePeelTiledLoopsPass();
+
 // Pass to specialize linalg.matmul to dot, matvec or vecmat.
 std::unique_ptr<mlir::FunctionPass> CreateLinalgMatmulSpecializationPass();
 
 // Pass to split _Fused Tensorflow kernels into primitives.
 std::unique_ptr<mlir::FunctionPass> CreateFissionPass();
+
+// Pass to optimize broadcasts based on the symbolic shape constraints.
+std::unique_ptr<mlir::FunctionPass> CreateSymbolicShapeOptimizationPass(
+    bool constraints_only = false);
 
 // Creates `tf_device.cluster` operations according to the TF CPURT clustering
 // policy.

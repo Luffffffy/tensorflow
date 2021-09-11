@@ -24,6 +24,7 @@ limitations under the License.
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/collective.h"
+#include "tensorflow/core/framework/dataset_metadata.pb.h"
 #include "tensorflow/core/framework/dataset_options.pb.h"
 #include "tensorflow/core/framework/dataset_stateful_op_allowlist.h"
 #include "tensorflow/core/framework/function.h"
@@ -84,6 +85,7 @@ constexpr char kColon[] = ":";
 
 constexpr char kTFDataResourceTag[] = "tfdata";
 constexpr char kTraceInfoUnavailable[] = "unavailable";
+constexpr char kMetadata[] = "metadata";
 
 class DatasetBase;
 class SerializationContext;
@@ -363,6 +365,9 @@ class SplitProvider {
                          IteratorStateReader* reader) = 0;
 };
 
+// Returns the runner threadpool size from an OpKernelContext.
+int32_t GetRunnerThreadpoolSizeFromOpKernelContext(OpKernelContext* ctx);
+
 // A cut-down version of `OpKernelContext` for running computations in
 // iterators. Note that we cannot simply use `OpKernelContext` here because we
 // might run computation in an iterator whose lifetime is not nested within the
@@ -392,7 +397,8 @@ class IteratorContext {
           split_providers(ctx->split_providers()),
           stats_aggregator(ctx->stats_aggregator()),
           thread_factory(ctx->thread_factory()),
-          thread_pool(ctx->thread_pool()) {}
+          thread_pool(ctx->thread_pool()),
+          interleave_depth(ctx->interleave_depth()) {}
 
     explicit Params(OpKernelContext* ctx)
         : collective_executor(ctx->collective_executor()),
@@ -405,15 +411,7 @@ class IteratorContext {
         return device->GetAllocator(attrs);
       };
 
-      thread::ThreadPool* thread_pool =
-          ctx->device()->tensorflow_device_thread_pool();
-      if (thread_pool) {
-        runner_threadpool_size = thread_pool->NumThreads();
-      } else {
-        static const int32_t kDefaultRunnerThreadpoolSize =
-            port::MaxParallelism();
-        runner_threadpool_size = kDefaultRunnerThreadpoolSize;
-      }
+      runner_threadpool_size = GetRunnerThreadpoolSizeFromOpKernelContext(ctx);
 
       // NOTE: Wrap every runner invocation in a call to Runner()->Run(), so
       // that a symbol in the tensorflow::data namespace is always on the stack
@@ -480,6 +478,11 @@ class IteratorContext {
 
     // A shared thread pool to schedule computation into.
     thread::ThreadPoolInterface* thread_pool = nullptr;
+
+    // Records the number of ParallelInterleave operations in the path from the
+    // root node to this node (not including this node) in the input pipeline
+    // tree.
+    int64 interleave_depth = 0;
   };
 
   explicit IteratorContext(IteratorContext* ctx) : params_(Params{ctx}) {}
@@ -537,6 +540,8 @@ class IteratorContext {
   }
 
   thread::ThreadPoolInterface* thread_pool() { return params_.thread_pool; }
+
+  int64 interleave_depth() { return params_.interleave_depth; }
 
   std::unique_ptr<thread::ThreadPool> CreateThreadPool(const string& name,
                                                        int num_threads) {
@@ -889,7 +894,9 @@ class DatasetBase : public core::RefCounted {
   const string& node_name() const { return node_name_; }
 
   // Initializes the dataset.
-  void Initialize();
+  void Initialize(const Metadata& metadata);
+
+  const Metadata& metadata() const { return metadata_; }
 
   const Options& options() const { return options_; }
 
@@ -923,9 +930,10 @@ class DatasetBase : public core::RefCounted {
     std::unique_ptr<IteratorBase> it;
     IteratorContext::Params params(ctx);
     params.is_restoring = true;
-    TF_RETURN_IF_ERROR(MakeIterator(IteratorContext(std::move(params)),
+    IteratorContext restore_ctx(std::move(params));
+    TF_RETURN_IF_ERROR(MakeIterator(&restore_ctx,
                                     /*parent=*/nullptr, output_prefix, &it));
-    TF_RETURN_IF_ERROR(it->Restore(ctx, reader));
+    TF_RETURN_IF_ERROR(it->Restore(&restore_ctx, reader));
     *iterator = std::move(it);
     return Status::OK();
   }
@@ -979,9 +987,12 @@ class DatasetBase : public core::RefCounted {
   // state. Otherwise, the method returns `Status::OK()`.
   virtual Status CheckExternalState() const = 0;
 
+  // Indicates whether the dataset is compatible with random access.
+  Status CheckRandomAccessCompatible(const int64 index) const;
+
   // Return the element at a particular index for a randomly accessible dataset.
   virtual Status Get(OpKernelContext* ctx, int64 index,
-                     std::vector<Tensor>* out_tensors);
+                     std::vector<Tensor>* out_tensors) const;
 
   // Wrapper around a GraphDefBuilder which provides support for serializing
   // Datasets as GraphDefs.
@@ -993,6 +1004,9 @@ class DatasetBase : public core::RefCounted {
                            const DatasetBase* dataset, Node** output);
     Status AddDatasetOrTensor(SerializationContext* ctx, const Tensor& val,
                               Node** output);
+    Status AddIdentity(SerializationContext* ctx,
+                       const std::string& name_prefix, Node** input,
+                       Node** output);
 
    private:
     Status AddDatasetOrTensorHelper(SerializationContext* ctx,
@@ -1028,6 +1042,9 @@ class DatasetBase : public core::RefCounted {
   void set_options(const Options& options) { options_ = options; }
 
  private:
+  // Computes and stores the cardinality of a given dataset.
+  Status ComputeCardinality();
+
   // Computes the number of source datasets feeding into this dataset. A source
   // dataset is a leaf in the subtree of dataset inputs.
   Status ComputeNumSources();
@@ -1040,10 +1057,12 @@ class DatasetBase : public core::RefCounted {
 
   const string type_string_;
   const string node_name_;
+  Metadata metadata_;
   Options options_;
   // The number of source datasets feeding into the dataset. A source dataset is
   // a leaf in the subtree of dataset inputs.
   int64_t num_sources_ = -1;
+  int64_t cardinality_ = kUnknownCardinality;
 };
 
 // Represents an iterator that is associated with a particular dataset.
@@ -1270,13 +1289,24 @@ Status ParseVectorArgument(OpKernelContext* ctx,
 // graph execution engine.
 class DatasetOpKernel : public OpKernel {
  public:
-  explicit DatasetOpKernel(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+  explicit DatasetOpKernel(OpKernelConstruction* ctx) : OpKernel(ctx) {
+    if (ctx->HasAttr(kMetadata)) {
+      std::string serialized_metadata;
+      OP_REQUIRES_OK(ctx, ctx->GetAttr(kMetadata, &serialized_metadata));
+      OP_REQUIRES(ctx, metadata_.ParseFromString(serialized_metadata),
+                  errors::InvalidArgument(absl::StrCat(
+                      "Could not parse the 'metadata' attribute.")));
+    }
+  }
 
   void Compute(OpKernelContext* ctx) final;
 
-  // Indicates whether the given op corresponds to an op whose kernels subclass
-  // the `DatasetOpKernel` class.
-  static bool IsDatasetOp(const OpDef* op_def);
+  // Checks whether the given op is a tf.data operation.
+  //
+  // NOTE: The check uses a heuristic and can produce both false positives and
+  // false negatives. In particular, tf.data operations are expected to use
+  // names that end with "Dataset" or "DatasetV[0-9]+".
+  static bool IsDatasetOp(const OpDef& op_def);
 
   string TraceString(const OpKernelContext& ctx, bool verbose) const override;
 
@@ -1284,6 +1314,9 @@ class DatasetOpKernel : public OpKernel {
   // Subclasses should implement this method. It will be called during Compute
   // execution.
   virtual void MakeDataset(OpKernelContext* ctx, DatasetBase** output) = 0;
+
+ private:
+  Metadata metadata_;
 };
 
 // Encapsulates the work required to plug unary Datasets into the core

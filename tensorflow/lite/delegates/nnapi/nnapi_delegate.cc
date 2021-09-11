@@ -57,11 +57,11 @@ limitations under the License.
 #include "tensorflow/lite/delegates/nnapi/nnapi_delegate_kernel.h"
 #include "tensorflow/lite/delegates/nnapi/quant_lstm_sup.h"
 #include "tensorflow/lite/delegates/utils.h"
+#include "tensorflow/lite/kernels/internal/utils/sparsity_format_converter.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/minimal_logging.h"
 #include "tensorflow/lite/nnapi/nnapi_implementation.h"
 #include "tensorflow/lite/nnapi/nnapi_util.h"
-#include "tensorflow/lite/tools/optimize/sparsity/format_converter.h"
 #include "tensorflow/lite/util.h"
 #ifdef NNAPI_VERBOSE_VALIDATION
 #include "tensorflow/lite/schema/schema_generated.h"
@@ -354,6 +354,14 @@ inline bool isLstmBasicKernel(const TfLiteNode* node) {
 inline bool isLstmFullKernel(const TfLiteNode* node) {
   return node->inputs->size == kLstmFullKernelInputSize ||
          node->inputs->size == kLstmFullKernelNoOptionalParamsInputSize;
+}
+
+bool IsMeanWithDifferentInputOutputQuantization(const TfLiteContext* context,
+                                                const TfLiteNode* node) {
+  const auto& input = context->tensors[node->inputs->data[0]];
+  const auto& output = context->tensors[node->outputs->data[0]];
+  return input.params.scale != output.params.scale ||
+         input.params.zero_point != output.params.zero_point;
 }
 
 bool IsHybridOperator(const TfLiteContext* context, int builtin_code,
@@ -1131,6 +1139,32 @@ class NNAPIOpBuilder {
     return kTfLiteOk;
   }
 
+  // Add a ADD op to requantize an NNAPI intermediate output to the scale and
+  // zero point of the TFLite output tensor.
+  TfLiteStatus AppendRequantize(int nn_input_index, int lite_out_tensor_index,
+                                int lite_node_index, int tensor_flags = 0) {
+    augmented_inputs_.push_back(nn_input_index);
+    auto& output_tensor = context_->tensors[lite_out_tensor_index];
+
+    // Create a zero vector with the same type as the output type. There is only
+    // one single element in the vector, and it is broadcastable with any
+    // tensor.
+    TF_LITE_ENSURE(context_, IsQuantized(output_tensor.type));
+    bool need_int8_conversion = tensor_flags & NN_TENSOR_FLAG_INT8_CONVERSION;
+    int nn_type = (output_tensor.type == kTfLiteUInt8 || need_int8_conversion)
+                      ? ANEURALNETWORKS_TENSOR_QUANT8_ASYMM
+                      : ANEURALNETWORKS_TENSOR_QUANT8_ASYMM_SIGNED;
+    int8_t zero = 0;
+    TF_LITE_ENSURE_STATUS(AddVectorOperand(&zero, /*num_values=*/1, nn_type,
+                                           /*scale=*/1.0f, /*zero_point=*/0));
+
+    TF_LITE_ENSURE_STATUS(AddScalarInt32Operand(ANEURALNETWORKS_FUSED_NONE));
+    TF_LITE_ENSURE_STATUS(AddTensorOutput(lite_out_tensor_index, tensor_flags));
+    TF_LITE_ENSURE_STATUS(
+        FinalizeAddOperation(ANEURALNETWORKS_ADD, lite_node_index));
+    return kTfLiteOk;
+  }
+
   // Lower PACK into CONCAT + RESHAPE when possible
   TfLiteStatus TransformPackIntoSupportedOps(int lite_node_index,
                                              TfLiteNode* node,
@@ -1290,20 +1324,26 @@ class NNAPIOpBuilder {
                                            uint32_t dimension_count,
                                            const uint32_t* dimension_data,
                                            float scale, int32_t zero_point,
-                                           int* ann_index_out) {
+                                           int* ann_index_out,
+                                           bool need_int8_conversion = false) {
     int32_t nn_type;
     switch (tfl_type) {
       case kTfLiteFloat32:
         nn_type = ANEURALNETWORKS_TENSOR_FLOAT32;
         break;
       case kTfLiteInt8:
-        nn_type = ANEURALNETWORKS_TENSOR_QUANT8_ASYMM_SIGNED;
+        nn_type = need_int8_conversion
+                      ? ANEURALNETWORKS_TENSOR_QUANT8_ASYMM
+                      : ANEURALNETWORKS_TENSOR_QUANT8_ASYMM_SIGNED;
         break;
       case kTfLiteUInt8:
         nn_type = ANEURALNETWORKS_TENSOR_QUANT8_ASYMM;
         break;
       default:
         return kTfLiteError;
+    }
+    if (need_int8_conversion) {
+      zero_point += 128;
     }
     TF_LITE_ENSURE_STATUS(
         AddAdditionalOutputTensor(dimension_count, dimension_data, nn_type,
@@ -1991,7 +2031,7 @@ bool NNAPIDelegateKernel::Validate(
       }
     } break;
     case kTfLiteBuiltinConv2d: {
-      ExpectMaxOpVersion(version, 3, &val_ctx);
+      ExpectMaxOpVersion(version, 5, &val_ctx);
       if (android_sdk_version < kMinSdkVersionForNNAPI12) {
         Expect(!IsHybridOperator(context, builtin_code, node),
                NNAPIValidationFailureType::kUnsupportedHybridOperator,
@@ -2632,15 +2672,6 @@ bool NNAPIDelegateKernel::Validate(
              NNAPIValidationFailureType::kUnsupportedOutputType,
              "NNAPI does not support generating a scalar as output for MEAN.",
              &val_ctx);
-
-      auto input_param = context->tensors[node->inputs->data[0]].params;
-      auto output_param = context->tensors[node->outputs->data[0]].params;
-      Expect(input_param.scale == output_param.scale &&
-                 input_param.zero_point == output_param.zero_point,
-             NNAPIValidationFailureType::kUnsupportedOutputType,
-             "NNAPI requires that the input and output have the same "
-             "quantization parameters.",
-             &val_ctx);
     } break;
     case kTfLiteBuiltinEmbeddingLookup: {
       ExpectOpVersion(version, 1, &val_ctx);
@@ -2746,7 +2777,7 @@ bool NNAPIDelegateKernel::Validate(
     case kTfLiteBuiltinEqual:
     case kTfLiteBuiltinNotEqual: {
       ExpectMaxOpVersion(version, 2, &val_ctx);
-      ExpectMinAndroidSdkVersion(android_sdk_version, kMinSdkVersionForNNAPI11,
+      ExpectMinAndroidSdkVersion(android_sdk_version, kMinSdkVersionForNNAPI12,
                                  &val_ctx);
       const auto input_type = context->tensors[node->inputs->data[0]].type;
       EXPECT_INPUT_TYPE_IN(input_type, kTfLiteFloat32, kTfLiteUInt8,
@@ -2754,7 +2785,7 @@ bool NNAPIDelegateKernel::Validate(
     } break;
     case kTfLiteBuiltinNeg: {
       ExpectMaxOpVersion(version, 2, &val_ctx);
-      ExpectMinAndroidSdkVersion(android_sdk_version, kMinSdkVersionForNNAPI11,
+      ExpectMinAndroidSdkVersion(android_sdk_version, kMinSdkVersionForNNAPI12,
                                  &val_ctx);
       const auto input_type = context->tensors[node->inputs->data[0]].type;
       EXPECT_INPUT_TYPE_IN(input_type, kTfLiteFloat32, kTfLiteInt32);
@@ -2774,7 +2805,7 @@ bool NNAPIDelegateKernel::Validate(
     } break;
     case kTfLiteBuiltinSelect: {
       ExpectMaxOpVersion(version, 2, &val_ctx);
-      ExpectMinAndroidSdkVersion(android_sdk_version, kMinSdkVersionForNNAPI11,
+      ExpectMinAndroidSdkVersion(android_sdk_version, kMinSdkVersionForNNAPI12,
                                  &val_ctx);
       const auto value_type = context->tensors[node->inputs->data[1]].type;
       EXPECT_INPUT_TYPE_IN(value_type, kTfLiteFloat32, kTfLiteInt32,
@@ -4582,7 +4613,7 @@ TfLiteStatus NNAPIDelegateKernel::DensifyAndDequantizeConstTensor(
     case kTfLiteFloat32: {
       dense_size = output_tensor.bytes / sizeof(float);
       std::vector<float> output_data(dense_size);
-      tflite::optimize::sparsity::FormatConverter<float> converter(
+      tflite::internal::sparsity::FormatConverter<float> converter(
           vector_shape, *input_tensor.sparsity);
       converter.SparseToDense(static_cast<const float*>(input_tensor.data.data),
                               dense_size, output_data.data(), context);
@@ -4596,7 +4627,7 @@ TfLiteStatus NNAPIDelegateKernel::DensifyAndDequantizeConstTensor(
       std::vector<uint16_t> output_data(dense_size);
       Eigen::half* unpacked_fp16_data =
           reinterpret_cast<Eigen::half*>(output_data.data());
-      tflite::optimize::sparsity::FormatConverter<Eigen::half> converter(
+      tflite::internal::sparsity::FormatConverter<Eigen::half> converter(
           vector_shape, *input_tensor.sparsity);
       converter.SparseToDense(
           static_cast<const Eigen::half*>(input_tensor.data.data), dense_size,
@@ -4621,7 +4652,7 @@ TfLiteStatus NNAPIDelegateKernel::DensifyAndDequantizeConstTensor(
     case kTfLiteInt8: {
       dense_size = output_tensor.bytes / sizeof(int8_t);
       std::vector<int8_t> output_data(dense_size);
-      tflite::optimize::sparsity::FormatConverter<int8_t> converter(
+      tflite::internal::sparsity::FormatConverter<int8_t> converter(
           vector_shape, *input_tensor.sparsity);
       converter.SparseToDense(
           static_cast<const int8_t*>(input_tensor.data.data), dense_size,
@@ -5198,6 +5229,9 @@ TfLiteStatus NNAPIDelegateKernel::AddOpsAndTensors(
     // fc_nn_intermediate_output_index is used to indicate whether additional
     // RESHAPE op is needed.
     int fc_nn_intermediate_output_index = -1;
+    // mean_nn_intermediate_output_index is used to indicate whether additional
+    // re-quantization is needed.
+    int mean_nn_intermediate_output_index = -1;
     for (int output_pos = 0; output_pos < node->outputs->size; ++output_pos) {
       auto output_index = node->outputs->data[output_pos];
 
@@ -5219,6 +5253,16 @@ TfLiteStatus NNAPIDelegateKernel::AddOpsAndTensors(
             output_tensor.type, output_dims.size(), output_dims.data(),
             output_tensor.params.scale, output_tensor.params.zero_point,
             &fc_nn_intermediate_output_index));
+      } else if (reg->builtin_code == kTfLiteBuiltinMean &&
+                 IsMeanWithDifferentInputOutputQuantization(context, node)) {
+        // Handle MEAN with different input and output quantization params.
+        auto& input_tensor = context->tensors[node->inputs->data[0]];
+        auto& output_tensor = context->tensors[output_index];
+        TF_LITE_ENSURE_STATUS(builder.AddIntermediateOutputTensor(
+            output_tensor.type, output_tensor.dims->size,
+            reinterpret_cast<const uint32_t*>(output_tensor.dims->data),
+            input_tensor.params.scale, input_tensor.params.zero_point,
+            &mean_nn_intermediate_output_index, need_int8_conversion));
       } else {
         TF_LITE_ENSURE_STATUS(
             builder.AddTensorOutput(output_index, output_tensor_flags));
@@ -5235,6 +5279,11 @@ TfLiteStatus NNAPIDelegateKernel::AddOpsAndTensors(
     if (fc_nn_intermediate_output_index > -1) {
       TF_LITE_ENSURE_STATUS(builder.AppendReshape(
           fc_nn_intermediate_output_index, node->outputs->data[0], node_index));
+    }
+    if (mean_nn_intermediate_output_index > -1) {
+      TF_LITE_ENSURE_STATUS(builder.AppendRequantize(
+          mean_nn_intermediate_output_index, node->outputs->data[0], node_index,
+          output_tensor_flags));
     }
   }
   return kTfLiteOk;
@@ -5725,13 +5774,19 @@ TfLiteStatus StatefulNnApiDelegate::DoPrepare(TfLiteContext* context,
   std::vector<int> supported_nodes;
   // We don't care about all nodes_, we only care about ones in the
   // current plan.
-  TfLiteIntArray* plan;
-  TF_LITE_ENSURE_STATUS(context->GetExecutionPlan(context, &plan));
+  TfLiteIntArray* execution_plan;
+  TF_LITE_ENSURE_STATUS(context->GetExecutionPlan(context, &execution_plan));
+  // Copy the execution plan and wrap it with unique_ptr.
+  std::unique_ptr<TfLiteIntArray, decltype(&TfLiteIntArrayFree)> plan(
+      TfLiteIntArrayCopy(execution_plan), TfLiteIntArrayFree);
 
   // Check for every node if it is supported
   const bool is_accelerator_specified = ShouldUseTargetDevices(
       delegate_options, nnapi, /*exclude_nnapi_reference=*/true);
   std::vector<delegate::nnapi::NNAPIValidationFailure> map_failures;
+  // First pass through execution plan to remember mapping of FP16->FP32
+  // dequantizations in the graph.
+  std::vector<int> fp16_to_fp32(context->tensors_size, -1);
   bool should_prune_fp16_dequantize = false;
   for (int i = 0; i < plan->size; ++i) {
     const int node_id = plan->data[i];
@@ -5741,7 +5796,7 @@ TfLiteStatus StatefulNnApiDelegate::DoPrepare(TfLiteContext* context,
         context, node_id, &node, &registration));
     if (IsDequantizeConstFloat16(context, node, registration)) {
       should_prune_fp16_dequantize = true;
-      break;
+      fp16_to_fp32[node->inputs->data[0]] = node->outputs->data[0];
     }
   }
   if (should_prune_fp16_dequantize) {
@@ -5749,7 +5804,7 @@ TfLiteStatus StatefulNnApiDelegate::DoPrepare(TfLiteContext* context,
         context, target_feature_level, is_accelerator_specified,
         delegate_options.max_number_delegated_partitions);
   } else {
-    for (int node_index : TfLiteIntArrayView(plan)) {
+    for (int node_index : TfLiteIntArrayView(plan.get())) {
       TfLiteNode* node;
       TfLiteRegistration* registration;
       TF_LITE_ENSURE_STATUS(context->GetNodeAndRegistration(
@@ -5868,6 +5923,36 @@ TfLiteStatus StatefulNnApiDelegate::DoPrepare(TfLiteContext* context,
     TF_LITE_ENSURE_STATUS(context->PreviewDelegatePartitioning(
         context, supported_nodes_int_array.get(), &params_array,
         &num_partitions));
+  }
+
+  // FP16GraphPartitionHelper alters the orginal graph by remapping fp32
+  // dequantize output to fp16 input. In the case of accelerator backends does
+  // not support all the nodes of the fp16 model, We need to restore original
+  // graph in order for things to work.
+  if (should_prune_fp16_dequantize &&
+      supported_nodes.size() != nodes_to_delegate.size()) {
+    // Restore original graph
+    for (int execution_plan_index = 0; execution_plan_index < plan->size;
+         ++execution_plan_index) {
+      int node_index = plan->data[execution_plan_index];
+      TfLiteNode* node = nullptr;
+      TfLiteRegistration* reg = nullptr;
+      TF_LITE_ENSURE_STATUS(
+          context->GetNodeAndRegistration(context, node_index, &node, &reg));
+      if (reg->builtin_code == kTfLiteBuiltinDequantize) continue;
+
+      for (int i = 0; i < node->inputs->size; ++i) {
+        const int original_input_idx = node->inputs->data[i];
+        if (original_input_idx == kTfLiteOptionalTensor) continue;
+        // Use original FP32 input
+        if (context->tensors[original_input_idx].type == kTfLiteFloat16 &&
+            fp16_to_fp32[original_input_idx] != -1) {
+          node->inputs->data[i] = fp16_to_fp32[original_input_idx];
+        }
+      }
+    }
+    // Only allow full model delegation for fp16 model.
+    return kTfLiteOk;
   }
 
   TF_LITE_ENSURE_STATUS(

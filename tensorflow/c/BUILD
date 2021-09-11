@@ -200,7 +200,6 @@ tf_cuda_library(
     visibility = [
         "//tensorflow/c:__subpackages__",
         "//tensorflow/python:__subpackages__",
-        "//third_party/llvm/llvm-project:__subpackages__",
     ],
     deps = [
         ":c_api_internal",
@@ -274,6 +273,14 @@ tf_cuda_library(
     }),
 )
 
+filegroup(
+    name = "tf_status_internal_headers",
+    srcs = ["tf_status_internal.h"],
+    visibility = [
+        "//tensorflow/python:__subpackages__",
+    ],
+)
+
 cc_library(
     name = "tf_shape",
     srcs = ["tf_shape.cc"],
@@ -313,6 +320,18 @@ cc_library(
             "//tensorflow/core:lib",
         ],
     }),
+)
+
+tf_cc_test(
+    name = "tf_status_test",
+    srcs = ["tf_status_test.cc"],
+    deps = [
+        ":tf_status",
+        ":tf_status_internal",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+    ],
 )
 
 cc_library(

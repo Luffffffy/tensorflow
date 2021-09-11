@@ -58,9 +58,13 @@ cc_library(
     srcs = [
         "ccl_pattern.cc",
         "ccl_pattern.h",
+        "custom_call_pattern.cc",
+        "custom_call_pattern.h",
         "gemm_pattern.cc",
         "gemm_pattern.h",
         "gpu_passes.cc",
+        "memcpy_pattern.cc",
+        "memcpy_pattern.h",
     ],
     hdrs = ["gpu_passes.h"],
     tags = [

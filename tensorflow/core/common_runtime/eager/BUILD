@@ -179,13 +179,11 @@ tf_cuda_library(
     deps = [
         ":context",
         ":eager_executor",
-        "//tensorflow/c/eager:abstract_tensor_handle",
         "//tensorflow/c/eager:immediate_execution_context",
         "//tensorflow/c/eager:immediate_execution_distributed_manager",
         "//tensorflow/core/distributed_runtime:rendezvous_mgr_interface",
         "//tensorflow/core/distributed_runtime:master_env",
         "//tensorflow/core/distributed_runtime:worker_env",
-        "//tensorflow/cc:ops",
     ] + select({
         "//tensorflow:android": [
             "//tensorflow/core:portable_tensorflow_lib_lite",
@@ -399,6 +397,7 @@ tf_cuda_library(
             "//tensorflow/core:lib_internal",
             "//tensorflow/core:protos_all_cc",
             "//tensorflow/core:session_options",
+            "//tensorflow/core/profiler/lib:scoped_memory_debug_annotation",
         ],
     }),
 )
@@ -514,6 +513,7 @@ cc_library(
         "//tensorflow/c:tf_tensor_internal",
         "//tensorflow/compiler/jit:common",
         "//tensorflow/core/profiler/lib:traceme",
+        "//tensorflow/core/profiler/lib:scoped_memory_debug_annotation",
     ] + select({
         "//tensorflow:android": [
             "//tensorflow/core:portable_tensorflow_lib_lite",
@@ -639,6 +639,7 @@ cc_library(
         "//tensorflow/c:tf_tensor_internal",
         "//tensorflow/compiler/jit:common",
         "//tensorflow/core/profiler/lib:traceme",
+        "//tensorflow/core/profiler/lib:scoped_memory_debug_annotation",
         "//tensorflow/c/eager:abstract_function",
         "//tensorflow/core/platform:errors",
     ] + select({

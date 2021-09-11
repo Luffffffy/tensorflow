@@ -420,6 +420,7 @@ py_library(
         "//tensorflow/python:errors",
         "//tensorflow/python:framework_ops",
         "//tensorflow/python:handle_data_util",
+        "//tensorflow/python:lib",
         "//tensorflow/python:lookup_ops",
         "//tensorflow/python:resource_variable_ops",
         "//tensorflow/python:tensor_util",
@@ -740,5 +741,15 @@ tf_py_test(
     deps = [
         ":pywrap_saved_model",
         "//tensorflow/python/eager:test",
+    ],
+)
+
+tf_py_test(
+    name = "keras_injection_test",
+    size = "small",
+    srcs = ["keras_injection_test.py"],
+    python_version = "PY3",
+    deps = [
+        "//tensorflow:tensorflow_py",
     ],
 )

@@ -75,9 +75,6 @@ std::unique_ptr<OperationPass<FuncOp>> CreateMaterializePassthroughOpPass();
 // Performs Shape Inference on the TensorFlow dialect using the global registry.
 std::unique_ptr<OperationPass<ModuleOp>> CreateTFShapeInferencePass();
 
-// Performs checks that the whole module does not contain dynamic shapes.
-std::unique_ptr<OperationPass<FuncOp>> CreateTFEnsureStaticShapesPass();
-
 // Guarantee that all FuncOp's have a single use.
 std::unique_ptr<OperationPass<ModuleOp>> CreateGuaranteeAllFuncsOneUsePass();
 
@@ -348,11 +345,6 @@ std::unique_ptr<OperationPass<FuncOp>> CreateDeviceAttributeToLaunchPass();
 // attribute to each TensorFlow dialect op in the body based on the `device`
 // attribute on the `tf_device.launch`.
 std::unique_ptr<OperationPass<FuncOp>> CreateLaunchToDeviceAttributePass();
-
-// Creates a pass that hoists a `tf_device.replicate` body and replicates each
-// TensorFlow dialect op in the body based on its `device` attribute and the
-// `devices` attribute on the `tf_device.replicate`.
-std::unique_ptr<OperationPass<mlir::ModuleOp>> CreateTFDeviceReplicationPass();
 
 // Creates a pass that extracts ops in tf_device.launch op with host device
 // assignment and adds an `_xla_outside_compilation` attribute value.

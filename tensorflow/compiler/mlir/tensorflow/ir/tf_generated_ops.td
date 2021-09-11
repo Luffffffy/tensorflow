@@ -2384,7 +2384,8 @@ Sets up the centralized structures for a distributed TPU system.
     DefaultValuedAttr<StrAttr, "">:$tpu_embedding_config,
     DefaultValuedAttr<BoolAttr, "false">:$is_global_init,
     DefaultValuedAttr<BoolAttr, "false">:$enable_whole_mesh_compilations,
-    DefaultValuedAttr<BoolAttr, "true">:$compilation_failure_closes_chips
+    DefaultValuedAttr<BoolAttr, "true">:$compilation_failure_closes_chips,
+    DefaultValuedAttr<I64Attr, "0">:$tpu_cancellation_closes_chips
   );
 
   let results = (outs
@@ -5272,6 +5273,8 @@ raising an error.
 
   TF_DerivedOperandTypeAttr Tindices = TF_DerivedOperandTypeAttr<1>;
   TF_DerivedOperandTypeAttr Tparams = TF_DerivedOperandTypeAttr<0>;
+
+  let hasCanonicalizer = 1;
 }
 
 def TF_GatherNdOp : TF_Op<"GatherNd", [NoSideEffect]> {
@@ -10226,6 +10229,37 @@ elements from `input_dataset` in parallel.}]>:$num_parallel_calls,
     Confined<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes,
     DefaultValuedAttr<BoolAttr, "true">:$use_inter_op_parallelism,
     DefaultValuedAttr<BoolAttr, "false">:$sloppy,
+    DefaultValuedAttr<BoolAttr, "false">:$preserve_cardinality
+  );
+
+  let results = (outs
+    TF_VariantTensor:$handle
+  );
+
+  TF_DerivedOperandTypeListAttr Targuments = TF_DerivedOperandTypeListAttr<1>;
+}
+
+def TF_ParallelMapDatasetV2Op : TF_Op<"ParallelMapDatasetV2", [NoSideEffect]> {
+  let summary = [{
+Creates a dataset that applies `f` to the outputs of `input_dataset`.
+  }];
+
+  let description = [{
+Unlike a "MapDataset", which applies `f` sequentially, this dataset invokes up
+to `num_parallel_calls` copies of `f` in parallel.
+  }];
+
+  let arguments = (ins
+    TF_VariantTensor:$input_dataset,
+    Variadic<TF_Tensor>:$other_arguments,
+    Arg<TF_Int64Tensor, [{The number of concurrent invocations of `f` that process
+elements from `input_dataset` in parallel.}]>:$num_parallel_calls,
+
+    SymbolRefAttr:$f,
+    Confined<TypeArrayAttr, [ArrayMinCount<1>]>:$output_types,
+    Confined<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes,
+    DefaultValuedAttr<BoolAttr, "true">:$use_inter_op_parallelism,
+    DefaultValuedAttr<StrAttr, "default">:$deterministic,
     DefaultValuedAttr<BoolAttr, "false">:$preserve_cardinality
   );
 
@@ -18085,7 +18119,8 @@ Creates a dataset that emits each dim-0 slice of `components` once.
   let arguments = (ins
     Variadic<TF_Tensor>:$components,
 
-    Confined<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes
+    Confined<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes,
+    DefaultValuedAttr<BoolAttr, "false">:$is_files
   );
 
   let results = (outs
