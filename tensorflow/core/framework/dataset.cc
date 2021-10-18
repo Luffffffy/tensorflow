@@ -52,7 +52,7 @@ static std::unordered_set<string>* get_dataset_op_registry() {
 }
 
 std::string UniqueNodeName(const std::string& base) {
-  static std::atomic<int64> counter(0);
+  static std::atomic<int64_t> counter(0);
   return strings::StrCat(base, "/", counter.fetch_add(1));
 }
 
@@ -726,21 +726,28 @@ Status DatasetBase::InputDatasets(
 Status DatasetBase::DatasetGraphDefBuilder::AddInputDataset(
     SerializationContext* ctx, const DatasetBase* dataset, Node** output) {
   Status status = dataset->AsGraphDefInternal(ctx, this, output);
-  if (errors::IsUnimplemented(status) && !ctx->fail_if_unimplemented()) {
-    Tensor t(DT_VARIANT, TensorShape({}));
-    // `StoreDatasetInVariantTensor` will transfer ownership of `dataset`. We
-    // increment the refcount of `dataset` here to retain ownership.
-    dataset->Ref();
-    TF_RETURN_IF_ERROR(
-        StoreDatasetInVariantTensor(const_cast<DatasetBase*>(dataset), &t));
-    TF_RETURN_IF_ERROR(AddPlaceholder(t, output));
-    DCHECK_NE(ctx->input_list(), nullptr);
-    ctx->input_list()->emplace_back((*output)->name(), std::move(t));
-    LOG_EVERY_N_SEC(WARNING, 30)
-        << "Input of " << dataset->DebugString()
-        << " will not be optimized because the dataset does not implement the "
-           "AsGraphDefInternal() method needed to apply optimizations.";
-    return Status::OK();
+  if (ctx->is_graph_rewrite()) {
+    if (status.ok()) {
+      // Record cardinality in an unregistered attributes so that rewrites have
+      // this information.
+      (*output)->AddAttr(kCardinalityAttrForRewrite, dataset->Cardinality());
+    } else if (errors::IsUnimplemented(status)) {
+      Tensor t(DT_VARIANT, TensorShape({}));
+      // `StoreDatasetInVariantTensor` will transfer ownership of `dataset`. We
+      // increment the refcount of `dataset` here to retain ownership.
+      dataset->Ref();
+      TF_RETURN_IF_ERROR(
+          StoreDatasetInVariantTensor(const_cast<DatasetBase*>(dataset), &t));
+      TF_RETURN_IF_ERROR(AddPlaceholder(t, output));
+      DCHECK_NE(ctx->input_list(), nullptr);
+      ctx->input_list()->emplace_back((*output)->name(), std::move(t));
+      LOG_EVERY_N_SEC(WARNING, 30)
+          << "Input of " << dataset->DebugString()
+          << " will not be optimized because the dataset does not implement "
+             "the "
+             "AsGraphDefInternal() method needed to apply optimizations.";
+      return Status::OK();
+    }
   }
   return status;
 }
@@ -760,7 +767,7 @@ Status DatasetBase::DatasetGraphDefBuilder::AddDatasetOrTensor(
       return s;
     }
   }
-  if (t.dtype() == DT_RESOURCE && ctx->serialize_data_tensors()) {
+  if (t.dtype() == DT_RESOURCE && !ctx->is_graph_rewrite()) {
     Status s = AddResourceHelper(ctx, t, output);
     if (!errors::IsUnimplemented(s)) {
       // Fall through to AddTensor if AsGraphDef is not implemented for this
@@ -865,7 +872,7 @@ Status DatasetBaseIterator::GetNext(IteratorContext* ctx,
                              profiler::TraceMeLevel::kInfo);
   DVLOG(3) << prefix() << " GetNext enter";
   auto model = ctx->model();
-  if (model && model->collect_resource_usage() && node_) {
+  if (collect_resource_usage(ctx)) {
     int64_t now_nanos = EnvTime::NowNanos();
     auto output = node_->output();
     if (output) {
@@ -883,7 +890,7 @@ Status DatasetBaseIterator::GetNext(IteratorContext* ctx,
       out_tensors->clear();
     }
   }
-  if (model && model->collect_resource_usage() && node_) {
+  if (collect_resource_usage(ctx)) {
     int64_t now_nanos = EnvTime::NowNanos();
     node_->record_stop(now_nanos);
     auto output = node_->output();
@@ -909,7 +916,7 @@ Status DatasetBaseIterator::Skip(IteratorContext* ctx, int num_to_skip,
                              profiler::TraceMeLevel::kInfo);
   DVLOG(3) << prefix() << " Skip enter";
   auto model = ctx->model();
-  if (model && model->collect_resource_usage() && node_) {
+  if (collect_resource_usage(ctx)) {
     int64_t now_nanos = EnvTime::NowNanos();
     auto output = node_->output();
     if (output) {
@@ -918,7 +925,7 @@ Status DatasetBaseIterator::Skip(IteratorContext* ctx, int num_to_skip,
     node_->record_start(now_nanos);
   }
   Status s = SkipInternal(ctx, num_to_skip, end_of_sequence, num_skipped);
-  if (model && model->collect_resource_usage() && node_) {
+  if (collect_resource_usage(ctx)) {
     int64_t now_nanos = EnvTime::NowNanos();
     node_->record_stop(now_nanos);
     auto output = node_->output();

@@ -152,12 +152,18 @@ class ConvolutionVisitor {
   // Perform space-to-batch propagation on concatenate.
   Status PropagateOnConcat(HloInstruction* concat);
 
+  // Perform space-to-batch propagation on reverse.
+  Status PropagateOnReverse(HloInstruction* reverse);
+
   // Perform space-to-batch propagation on the backprop filter convolution.
   // Assumes the activations and kernel were already space-to-batched.
   Status PropagateOnBackpropFilterConv(HloInstruction* convolution);
 
   // Method that checks validity of space-to-batch on a given convolution.
   bool IsConvSuitableForSpaceToBatch(HloInstruction* convolution);
+
+  // Method that returns true if this is a backprop filter convolution.
+  bool IsThisBackPropFilterConv(HloInstruction* convolution);
 
   // Once a convolution has been space-to-batch'ed, this function will
   // transitively propagate the space-to-batch-ness on rest of the graph.
@@ -278,6 +284,9 @@ class ConvolutionVisitor {
   // Depth for searching unpropagatable op.
   static constexpr int64_t kUnpropagatableOpSearchDepth = 3;
 
+  // Penalty on size for base dilated convs
+  static constexpr int64_t kMultiplierOnSpaceForBaseDilation = 3;
+
   // Cache for <instruction, depth> ==> unpropagatablilty decision.
   absl::flat_hash_map<std::pair<HloInstruction*, int64_t>, bool>
       unpropagatability_cache_;
@@ -375,7 +384,8 @@ bool ConvolutionVisitor::IsConvSuitableForSpaceToBatch(
         return false;
       }
     } else if (c.kernel_spatial_dim_size != c.base_dilation_factor + 1 ||
-               low_pad != c.base_dilation_factor - 1) {
+               (low_pad != c.base_dilation_factor - 1 &&
+                low_pad != c.base_dilation_factor)) {
       // Only support dilations such that base dilation factor and low pad are
       // compatible with kernel_spatial_dim_size to be compatible with
       // HaloDuplicateWithSlice.
@@ -399,7 +409,48 @@ bool ConvolutionVisitor::IsConvSuitableForSpaceToBatch(
   if (c.halo_size > CeilOfRatio(c.spatial_size, ctrl_.number_of_splits)) {
     return false;
   }
+
+  // TODO(b/201444224): The following cost model is needed to escape slowing
+  // down ssd batch 4.
+  if (c.base_dilation_factor > 1 &&
+      c.inherent_low_padding == c.base_dilation_factor) {
+    if (c.spatial_size <
+        kMultiplierOnSpaceForBaseDilation * ctrl_.number_of_splits) {
+      return false;
+    }
+  }
+
   VLOG(1) << "Legal space-to-batch convolution " << convolution->ToString();
+  return true;
+}
+
+bool ConvolutionVisitor::IsThisBackPropFilterConv(HloInstruction* convolution) {
+  auto activations = convolution->mutable_operand(0);
+  auto kernel = convolution->mutable_operand(1);
+  auto dim_numbers = convolution->convolution_dimension_numbers();
+
+  if (!old_to_new_instrs_.contains(kernel) &&
+      !old_to_new_instrs_.contains(activations)) {
+    return false;
+  }
+
+  if (old_to_new_instrs_.contains(kernel)) {
+    auto dim_map_val_op_0 = instr_to_dim_map_[kernel];
+    const int64_t old_batch_dim = dim_map_val_op_0.batch;
+    if (convolution->convolution_dimension_numbers()
+            .kernel_input_feature_dimension() != old_batch_dim) {
+      return false;
+    }
+  }
+
+  if (old_to_new_instrs_.contains(activations)) {
+    auto dim_map_val_op_0 = instr_to_dim_map_[activations];
+    const int64_t old_batch_dim = dim_map_val_op_0.batch;
+    if (dim_numbers.input_feature_dimension() != old_batch_dim) {
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -990,6 +1041,10 @@ bool ConvolutionVisitor::CanPropagate(HloInstruction* consumer,
     if (!ctrl_.enable_propagations_on_window_dilations) {
       return false;
     }
+
+    if (!IsThisBackPropFilterConv(consumer)) {
+      return false;
+    }
     // Check for space-to-depth readiness here. Note this is not done in
     // SupportedOpForPropagation because the readiness is dependent upon
     // space-to-batchedness of the operands.
@@ -1037,11 +1092,6 @@ bool ConvolutionVisitor::CanPropagate(HloInstruction* consumer,
           !old_to_new_instrs_.contains(activations)) {
         return false;
       }
-    }
-
-    if (!old_to_new_instrs_.contains(kernel) &&
-        !old_to_new_instrs_.contains(activations)) {
-      return false;
     }
 
     if (!old_to_new_instrs_.contains(kernel)) {
@@ -1410,6 +1460,24 @@ bool ConvolutionVisitor::SupportedOpForPropagation(HloInstruction* consumer,
     return true;
   }
 
+  if (consumer->opcode() == HloOpcode::kReverse) {
+    auto operand_0 = consumer->mutable_operand(0);
+    if (!instr_to_dim_map_.contains(operand_0)) {
+      return false;
+    }
+    // Disallow reversing on the batch and space dims
+    auto result = instr_to_dim_map_[operand_0];
+    const int64_t old_batch_dim = result.batch;
+    const int64_t old_space_dim = result.space;
+
+    for (auto dim : consumer->dimensions()) {
+      if (dim == old_batch_dim || dim == old_space_dim) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   if (consumer->opcode() == HloOpcode::kReduce) {
     // Support only the trivial case where both batch and split spatial dim are
     // being reduced
@@ -1681,6 +1749,11 @@ StatusOr<bool> ConvolutionVisitor::Propagate(HloInstruction* consumer,
 
   if (consumer->opcode() == HloOpcode::kConcatenate) {
     TF_CHECK_OK(PropagateOnConcat(consumer));
+    return true;
+  }
+
+  if (consumer->opcode() == HloOpcode::kReverse) {
+    TF_CHECK_OK(PropagateOnReverse(consumer));
     return true;
   }
 
@@ -2333,16 +2406,17 @@ Status ConvolutionVisitor::PropagateOnConv(HloInstruction* convolution) {
 
   // For space-to-batch supported base-dilated convolutions, the low padding is
   // passed on to the new convolutions. Halo does not have to account for it.
-  TF_ASSIGN_OR_RETURN(activations_new,
-                      HaloDuplicateWithSlice(
-                          activations_new, c.spatial_dimension_to_split,
-                          activations_batch_dim, old_batch_size,
-                          /*low_padding=*/c.base_dilation_factor != 1 &&
-                                  c.inherent_low_padding != 0
-                              ? 0
-                              : c.inherent_low_padding,
-                          c.inherent_high_padding,
-                          slice_size - spatial_split_size, old_split_dim_size));
+  TF_ASSIGN_OR_RETURN(
+      activations_new,
+      HaloDuplicateWithSlice(
+          activations_new, c.spatial_dimension_to_split, activations_batch_dim,
+          old_batch_size,
+          /*low_padding=*/c.base_dilation_factor != 1 &&
+                  c.inherent_low_padding != 0
+              ? (c.inherent_low_padding == c.base_dilation_factor ? 1 : 0)
+              : c.inherent_low_padding,
+          c.inherent_high_padding, slice_size - spatial_split_size,
+          old_split_dim_size));
 
   // We will generate output such that batch is followed by the split spatial
   // dimension.
@@ -2416,6 +2490,26 @@ Status ConvolutionVisitor::PropagateOnConcat(HloInstruction* concat) {
   // Set mappings from operand 0.
   instr_to_dim_map_[concat] = instr_to_dim_map_[concat->mutable_operand(0)];
   instr_to_dim_permute_map_[new_concat] =
+      std::vector<int64_t>(instr_to_dim_permute_map_[first_operand]);
+
+  return Status::OK();
+}
+
+Status ConvolutionVisitor::PropagateOnReverse(HloInstruction* reverse) {
+  auto first_operand = old_to_new_instrs_[reverse->mutable_operand(0)];
+  auto permute_dims = instr_to_dim_permute_map_[first_operand];
+
+  std::vector<int64_t> new_reverse_dimensions(reverse->dimensions().size());
+  int dim_count = 0;
+  for (auto dim : reverse->dimensions()) {
+    new_reverse_dimensions[dim_count++] = DimLookUp(permute_dims, dim);
+  }
+  TF_ASSIGN_OR_RETURN(HloInstruction * new_reverse,
+                      MakeReverseHlo(first_operand, new_reverse_dimensions));
+  old_to_new_instrs_[reverse] = new_reverse;
+  // Set mappings from operand 0.
+  instr_to_dim_map_[reverse] = instr_to_dim_map_[reverse->mutable_operand(0)];
+  instr_to_dim_permute_map_[new_reverse] =
       std::vector<int64_t>(instr_to_dim_permute_map_[first_operand]);
 
   return Status::OK();
@@ -2861,10 +2955,16 @@ Status ConvolutionVisitor::PropagateOnBackpropFilterConv(
     activations_chunks.push_back(activations_slice);
   }
 
-  int64_t high_padding_to_materialize = inherent_high_padding;
-  if (total_overlap_count < inherent_high_padding + inherent_low_padding) {
-    high_padding_to_materialize = 0;
+  int64_t high_padding_to_materialize = 0;
+
+  if (inherent_high_padding > 0) {
+    high_padding_to_materialize =
+        std::max(total_overlap_count -
+                     (std::max(overlap_count, static_cast<int64_t>(0)) +
+                      std::max(inherent_low_padding, static_cast<int64_t>(0))),
+                 static_cast<int64_t>(0));
   }
+
   // Insert slices for high padding.
   for (int64_t i = 0; i < high_padding_to_materialize; ++i) {
     HloInstruction* activations_to_use = nullptr;
@@ -3096,12 +3196,17 @@ ConvolutionVisitor::ConvDetails ConvolutionVisitor::GetConvolutionDetails(
   const int64_t halo_size =
       std::max(kernel_spatial_dim_size - 1 - (base_dilation_factor - 1),
                static_cast<int64_t>(0));
-  const int64_t high_padding_for_conv = base_dilation_factor == 1 ? 0
-                                        : inherent_low_padding == 0
-                                            ? base_dilation_factor - 1
-                                            : 0;
+
+  const int64_t high_padding_for_base_dilation =
+      inherent_low_padding == 0 || base_dilation_factor == inherent_low_padding
+          ? base_dilation_factor - 1
+          : 0;
+  const int64_t high_padding_for_conv =
+      base_dilation_factor == 1 ? 0 : high_padding_for_base_dilation;
   const int64_t low_padding_for_conv =
-      base_dilation_factor == 1 ? 0 : inherent_low_padding;
+      base_dilation_factor == 1                      ? 0
+      : base_dilation_factor == inherent_low_padding ? 0
+                                                     : inherent_low_padding;
 
   return ConvDetails{spatial_dimension_to_split,
                      inherent_low_padding,
@@ -3167,6 +3272,7 @@ Status ConvolutionVisitor::PerformSpaceToBatchOnConvolution(
       DoesConvolutionFeedReduceWindowOrSelectAndScatter(convolution);
 
   if (reduce_window_or_select_and_scatter != nullptr &&
+      reduce_window_or_select_and_scatter->shape().IsArray() &&
       reduce_window_or_select_and_scatter->shape().rank() ==
           convolution->shape().rank()) {
     VLOG(2)
@@ -3189,9 +3295,21 @@ Status ConvolutionVisitor::PerformSpaceToBatchOnConvolution(
 
   const int64_t slice_size = spatial_split_size + c.halo_size;
 
+  const int64_t low_pad_to_handle_base_dilation =
+      (c.base_dilation_factor > 1 &&
+       c.base_dilation_factor == c.inherent_low_padding)
+          ? 1
+          : 0;
+
   // Pad spatial dim.
-  const int64_t pad_size =
+  int64_t pad_size =
       spatial_split_size * ctrl_.number_of_splits - c.spatial_size;
+
+  bool handle_low_pad_in_first_reshape = false;
+  if (pad_size > low_pad_to_handle_base_dilation) {
+    pad_size -= low_pad_to_handle_base_dilation;
+    handle_low_pad_in_first_reshape = true;
+  }
 
   VLOG(1) << "spatial_split_size " << spatial_split_size << " stride "
           << c.stride << " slice_size " << slice_size;
@@ -3201,24 +3319,27 @@ Status ConvolutionVisitor::PerformSpaceToBatchOnConvolution(
   int64_t spatial_dimension_to_split = c.spatial_dimension_to_split;
   TF_ASSIGN_OR_RETURN(
       auto retval,
-      SplitSpace(activations, dim_numbers, spatial_dimension_to_split,
-                 activations_batch_dim,
-                 /*high_padding=*/c.inherent_high_padding + pad_size,
-                 /*low_padding=*/c.base_dilation_factor == 1
-                     ? c.inherent_low_padding
-                     : 0,
-                 spatial_split_size, ctrl_.number_of_splits));
+      SplitSpace(
+          activations, dim_numbers, spatial_dimension_to_split,
+          activations_batch_dim,
+          /*high_padding=*/c.inherent_high_padding + pad_size,
+          /*low_padding=*/c.base_dilation_factor == 1 ? c.inherent_low_padding
+          : handle_low_pad_in_first_reshape ? low_pad_to_handle_base_dilation
+                                            : 0,
+          spatial_split_size, ctrl_.number_of_splits));
   HloInstruction* batch_increased_reshape = retval.first;
   convolution->SetupDerivedInstruction(batch_increased_reshape);
 
   VLOG(1) << "First reshape done " << batch_increased_reshape->ToString();
 
   TF_ASSIGN_OR_RETURN(
-      activations, HaloDuplicateWithSlice(batch_increased_reshape,
-                                          spatial_dimension_to_split,
-                                          activations_batch_dim, old_batch_size,
-                                          /*low_padding=*/0, /*high_padding=*/0,
-                                          c.halo_size, c.input_dim_size));
+      activations,
+      HaloDuplicateWithSlice(
+          batch_increased_reshape, spatial_dimension_to_split,
+          activations_batch_dim, old_batch_size,
+          /*low_padding=*/
+          handle_low_pad_in_first_reshape ? 0 : low_pad_to_handle_base_dilation,
+          /*high_padding=*/0, c.halo_size, c.input_dim_size));
 
   VLOG(1) << "Batch merge done " << activations->ToString();
 

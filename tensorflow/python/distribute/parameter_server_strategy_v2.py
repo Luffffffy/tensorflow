@@ -18,10 +18,6 @@
 This is currently under development and the API is subject to change.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import threading
 
@@ -54,6 +50,11 @@ ALLOWED_TASK_TYPES = ("chief", "worker", "ps")
 cluster_coordinator = LazyLoader(
     "cluster_coordinator", globals(),
     "tensorflow.python.distribute.coordinator.cluster_coordinator"
+)
+
+load_context = LazyLoader(
+    "load_context", globals(),
+    "tensorflow.python.keras.saving.saved_model.load_context"
 )
 
 
@@ -805,10 +806,20 @@ class ParameterServerStrategyV2Extended(
     # the coordinator which incurs worker-coordinator communication overhead.
 
     def lookup_creator(next_creator, *args, **kwargs):
-      return ps_values.DistributedTable(self._container_strategy(),
-                                        lambda: next_creator(*args, **kwargs))  # pylint: disable=protected-access
+      if load_context.in_load_context:
+        return (ps_values.RestoredDistributedTable(
+            self._container_strategy(), lambda: next_creator(*args, **kwargs)))  # pylint: disable=protected-access
+      else:
+        return ps_values.DistributedTable(self._container_strategy(),
+                                          lambda: next_creator(*args, **kwargs))  # pylint: disable=protected-access
 
-    return ops.resource_creator_scope("StaticHashTable", lookup_creator)
+    def restored_lookup_creator(next_creator, *args, **kwargs):
+      return (ps_values.RestoredDistributedTable(
+          self._container_strategy(), lambda: next_creator(*args, **kwargs)))  # pylint: disable=protected-access
+
+    return [ops.resource_creator_scope("StaticHashTable", lookup_creator),
+            ops.resource_creator_scope("RestoredStaticHashTable",
+                                       restored_lookup_creator)]
 
   def _assert_used_with_cluster_coordinator(self):
     if (not self._used_with_coordinator and
@@ -823,14 +834,13 @@ class ParameterServerStrategyV2Extended(
   def _assert_being_scheduled_by_cluster_coordinator(self):
     if not self._being_scheduled and not self._allow_run_without_coordinator:
       logging.warning(
-          "It is detected that a function used with "
-          "`tf.distribute.experimental.ParameterServerStrategy` "
-          "is executed locally on the coordinator. This is inefficient but may "
-          "be valid for one-off tasks such as inferring output signature. "
-          "To properly distribute functions to run on workers, `run` or "
-          "`reduce` should be used within a function passed to `"
-          "tf.distribute.experimental.coordinator.ClusterCoordinator.schedule`."
-      )
+          "A `tf.distribute.experimental.ParameterServerStrategy` method is "
+          "invoked without using `ClusterCoordinator.schedule`. If you are not "
+          "tracing a tf.function, this method is possibly executed on the "
+          "coordinator, which can be slow. To properly dispatch functions to "
+          "run on workers, methods like `run` or `reduce` should be used "
+          "within a function passed to `tf.distribute.experimental.coordinator."
+          "ClusterCoordinator.schedule`.")
 
   # options is not used right now. But we may want to support options while
   # creating InputWorkers in future, similar to MirroredStrategy.

@@ -1025,7 +1025,8 @@ int MaybeRaiseExceptionFromTFStatus(TF_Status* status, PyObject* exception) {
     tensorflow::mutex_lock l(exception_class_mutex);
     if (exception_class != nullptr) {
       tensorflow::Safe_PyObjectPtr payloads(PyDict_New());
-      for (const auto& payload : status->status.GetAllPayloads()) {
+      for (const auto& payload :
+           tensorflow::errors::GetPayloads(status->status)) {
         PyDict_SetItem(payloads.get(),
                        PyBytes_FromString(payload.first.c_str()),
                        PyBytes_FromString(payload.second.c_str()));
@@ -1059,7 +1060,7 @@ int MaybeRaiseExceptionFromStatus(const tensorflow::Status& status,
     tensorflow::mutex_lock l(exception_class_mutex);
     if (exception_class != nullptr) {
       tensorflow::Safe_PyObjectPtr payloads(PyDict_New());
-      for (const auto& element : status.GetAllPayloads()) {
+      for (const auto& element : tensorflow::errors::GetPayloads(status)) {
         PyDict_SetItem(payloads.get(),
                        PyBytes_FromString(element.first.c_str()),
                        PyBytes_FromString(element.second.c_str()));
@@ -3979,6 +3980,7 @@ const char kAttrsEnd[] = "a";
 const char kName[] = "'";
 const char kNameEnd[] = "'";
 const char kLocalIdDelim[] = "_";
+const char kTraceTypeDelim[] = "t";
 
 // Container for storing generated string encoding as well as the raw python
 // objects that were not included in the string.
@@ -4036,9 +4038,12 @@ class LocalResourceIdMap {
 };
 
 // Contains encoding configuration, intermediary data and result.
+// TODO(b/201533914): Move EncodingContext fields to signature_context.
 struct EncodingContext {
   bool include_tensor_ranks_only;
   bool encode_variable_by_resource_id;
+  bool use_full_trace_type;
+  PyObject* signature_context;
 
   LocalResourceIdMap resource_id_map;
   EncodeResult result;
@@ -4282,8 +4287,43 @@ tensorflow::Status EncodeUnidentified(PyObject* arg, EncodingContext& context) {
   return tensorflow::Status::OK();
 }
 
+tensorflow::Status TryEncodingProtocol(PyObject* arg,
+                                       EncodingContext& context) {
+  // TODO(b/202447704): Drop _tf_tracing_type at protocol export.
+  tensorflow::Safe_PyObjectPtr protocol(
+      PyObject_GetAttrString(arg, "_tf_tracing_type"));
+
+  if (protocol == nullptr) {
+    PyErr_Clear();
+    protocol.reset(PyObject_GetAttrString(arg, "__tf_tracing_type__"));
+    if (protocol.get() == nullptr) {
+      PyErr_Clear();
+      return tensorflow::errors::Unimplemented(
+          "Python object does not implement tracing protocol");
+    }
+  }
+
+  tensorflow::Safe_PyObjectPtr tracetype(PyObject_CallObject(
+      protocol.get(), Py_BuildValue("(O)", context.signature_context)));
+
+  if (tracetype.get() == nullptr) {
+    PyErr_Clear();
+    return tensorflow::errors::Unknown(
+        "Call to '__tf_tracing_type__' failed to return a TraceType.");
+  }
+  Py_INCREF(tracetype.get());
+
+  absl::StrAppend(&context.result.str, kTraceTypeDelim);
+  context.result.objects.push_back(tracetype.get());
+  return tensorflow::Status::OK();
+}
+
 tensorflow::Status EncodeArgHelperInternal(PyObject* arg,
                                            EncodingContext& context) {
+  if (context.use_full_trace_type && TryEncodingProtocol(arg, context).ok()) {
+    return tensorflow::Status::OK();
+  }
+
   if (tensorflow::swig::IsTensorSpec(arg)) {
     TF_RETURN_IF_ERROR(EncodeTensorOrTensorSpec(arg, true, context));
   } else if (tensorflow::swig::IsTensor(arg)) {
@@ -4312,12 +4352,6 @@ tensorflow::Status EncodeArgHelperInternal(PyObject* arg,
   return tensorflow::Status::OK();
 }
 
-tensorflow::Status TFE_Py_EncodeArgHelper(PyObject* arg,
-                                          EncodingContext& context) {
-  auto status = EncodeArgHelperInternal(arg, context);
-  return status;
-}
-
 }  // namespace
 
 // `defun` uses dtypes and shapes instead of `Tensors` as cache keys. Dtypes
@@ -4329,12 +4363,16 @@ tensorflow::Status TFE_Py_EncodeArgHelper(PyObject* arg,
 // `include_tensor_ranks_only` allows caching on arguments excluding shape info,
 // so that a slow path using relaxed shape can rely on a cache key that excludes
 // shapes.
-PyObject* TFE_Py_EncodeArg(PyObject* arg, bool include_tensor_ranks_only,
-                           bool encode_variable_by_resource_id) {
+PyObject* TFE_Py_EncodeArg(PyObject* arg, PyObject* signature_context,
+                           bool include_tensor_ranks_only,
+                           bool encode_variable_by_resource_id,
+                           bool use_full_trace_type) {
   EncodingContext context;
   context.include_tensor_ranks_only = include_tensor_ranks_only;
   context.encode_variable_by_resource_id = encode_variable_by_resource_id;
-  const auto status = TFE_Py_EncodeArgHelper(arg, context);
+  context.use_full_trace_type = use_full_trace_type;
+  context.signature_context = signature_context;
+  const auto status = EncodeArgHelperInternal(arg, context);
   if (MaybeRaiseExceptionFromStatus(status, nullptr)) {
     return nullptr;
   }

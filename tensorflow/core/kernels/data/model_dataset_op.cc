@@ -107,7 +107,6 @@ class ModelDatasetOp::Dataset : public DatasetBase {
                             Node** output) const override {
     Node* input_graph_node = nullptr;
     TF_RETURN_IF_ERROR(b->AddInputDataset(ctx, input_, &input_graph_node));
-    TF_RETURN_IF_ERROR(b->AddDataset(this, {input_graph_node}, output));
     AttrValue algorithm_attr;
     b->BuildAttrValue(static_cast<int64_t>(algorithm_), &algorithm_attr);
     AttrValue cpu_budget_attr;
@@ -224,7 +223,8 @@ class ModelDatasetOp::Dataset : public DatasetBase {
 void ModelDatasetOp::MakeDatasetFromOptions(OpKernelContext* ctx,
                                             DatasetBase* input,
                                             model::AutotuneAlgorithm algorithm,
-                                            bool cpu_budget, bool ram_budget,
+                                            int64_t cpu_budget,
+                                            int64_t ram_budget,
                                             DatasetBase** output) {
   *output = new ModelDatasetOp::Dataset(
       DatasetContext(DatasetContext::Params(

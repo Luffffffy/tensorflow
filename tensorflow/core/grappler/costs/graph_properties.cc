@@ -615,6 +615,8 @@ bool IsAllowListedOpTypeForEvaluateNode(const string& op_type) {
           "Unpack",
           "GatherV2",
           "Pack",
+          // Used in batch_gather_nd: tensorflow/python/ops/array_ops.py
+          "ExpandDims",
       }));
   return kOpTpeAllowlist->find(op_type) != kOpTpeAllowlist->end();
 }
@@ -2774,7 +2776,7 @@ Status GraphProperties::AnnotateOutputShapes(GraphDef* output_graph_def,
         NormalizeShapeForOutput(proto);
       }
     }
-    (*node->mutable_attr())["_output_shapes"] = attr_output_shape;
+    (*node->mutable_attr())["_output_shapes"] = std::move(attr_output_shape);
   }
   return Status::OK();
 }
