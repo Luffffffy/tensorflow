@@ -58,7 +58,6 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/stream_executor_no_cuda.h"
-#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/ptr_util.h"
 #include "tensorflow/stream_executor/device_memory_allocator.h"
 
@@ -332,7 +331,7 @@ Service::ExecuteParallelAndRegisterResult(
     absl::Span<Executable* const> executables,
     absl::Span<const std::vector<std::vector<const ShapedBuffer*>>> arguments,
     Backend* backend, absl::Span<const DeviceHandle> device_handles,
-    absl::Span<const string> result_tags, ExecutionProfile* profile) {
+    absl::Span<const std::string> result_tags, ExecutionProfile* profile) {
   // Streams where the computation are launched, so we can wait on the streams
   // to complete.
   std::vector<StreamPool::Ptr> streams;
@@ -361,7 +360,9 @@ Service::ExecuteParallelAndRegisterResult(
     TF_ASSIGN_OR_RETURN(auto replicas, Replicas(*backend, device_handles[i]));
     CHECK_EQ(replicas.size(), arguments[i].size());
     std::vector<ScopedShapedBuffer> result_buffers;
-    for (int64_t replica = 0; replica < replicas.size(); ++replica) {
+    const int64_t n = replicas.size();
+    result_buffers.reserve(n);
+    for (int64_t replica = 0; replica < n; ++replica) {
       TF_ASSIGN_OR_RETURN(StreamPool::Ptr stream,
                           backend->BorrowStream(replicas[replica]));
       streams.push_back(std::move(stream));
@@ -430,7 +431,7 @@ Service::ExecuteParallelAndRegisterResult(
     for (auto& timer : timers) {
       timer_nanoseconds.push_back(timer->Nanoseconds());
     }
-    uint64 nanoseconds =
+    uint64_t nanoseconds =
         *std::max_element(timer_nanoseconds.begin(), timer_nanoseconds.end());
 
     // Overall execution time (in nanoseconds) from the executor timer.
@@ -457,7 +458,7 @@ StatusOr<GlobalDataHandle> Service::ExecuteAndRegisterResult(
     Executable* executable,
     absl::Span<const std::vector<const ShapedBuffer*>> arguments,
     Backend* backend, const DeviceHandle& device_handle,
-    const string& result_tag, ExecutionProfile* profile) {
+    const std::string& result_tag, ExecutionProfile* profile) {
   // Set up streams.
   std::vector<StreamPool::Ptr> streams;
 
@@ -477,6 +478,7 @@ StatusOr<GlobalDataHandle> Service::ExecuteAndRegisterResult(
 
   // Set up run options.
   std::vector<ServiceExecutableRunOptions> run_options;
+  run_options.reserve(streams.size());
   for (const StreamPool::Ptr& stream : streams) {
     ExecutableRunOptions options;
     options.set_stream(stream.get());
@@ -558,7 +560,7 @@ Status Service::ExecuteGraphParallel(const ExecuteGraphParallelRequest* arg,
   std::vector<std::vector<se::StreamExecutor*>> all_executors;
   std::vector<const HloModuleProto*> module_protos;
   std::vector<std::unique_ptr<HloModuleConfig>> module_configs;
-  std::vector<string> computation_names;
+  std::vector<std::string> computation_names;
   std::vector<DeviceHandle> device_handles;
 
   int num_requested_devices =
@@ -941,6 +943,7 @@ Status Service::TransferToServer(const TransferToServerRequest* arg,
 
   // Allocate memory in each replica and transfer the data to all replicas.
   std::vector<ScopedShapedBuffer> replicated_buffers;
+  replicated_buffers.reserve(replicas.size());
   for (se::StreamExecutor* executor : replicas) {
     TF_ASSIGN_OR_RETURN(
         ScopedShapedBuffer shaped_buffer,
@@ -1066,7 +1069,7 @@ Status Service::ComputeConstantGraph(const ComputeConstantGraphRequest* arg,
         if (custom_call->custom_call_target() == "SliceToDynamic") {
           auto result = operands[0]->Clone();
           for (int64_t i = 0; i < result.shape().rank(); ++i) {
-            result.SetDynamicSize(i, operands[1 + i]->Get<int32>({}));
+            result.SetDynamicSize(i, operands[1 + i]->Get<int32_t>({}));
           }
           return result.ToStatic();
         }

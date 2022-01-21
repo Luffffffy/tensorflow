@@ -21,12 +21,12 @@ limitations under the License.
 #include <memory>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/node_hash_map.h"
 #include "tensorflow/compiler/xla/layout_util.h"
 #include "tensorflow/compiler/xla/service/call_graph.h"
 #include "tensorflow/compiler/xla/service/computation_layout.h"
@@ -42,7 +42,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
 #include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/platform/types.h"
 
 namespace xla {
 
@@ -55,7 +54,7 @@ class LayoutConstraint {
       : mandatory_(mandatory), dfs_(dfs), priority_(priority) {}
   virtual ~LayoutConstraint() = default;
 
-  virtual string ToString() const = 0;
+  virtual std::string ToString() const = 0;
 
   // True if this constraint cannot be overwritten by a different constraint.
   bool mandatory() const { return mandatory_; }
@@ -89,7 +88,7 @@ class BufferLayoutConstraint : public LayoutConstraint {
   const LogicalBuffer& buffer() const { return *buffer_; }
   const Layout& layout() const { return layout_; }
 
-  string ToString() const override;
+  std::string ToString() const override;
 
  private:
   Layout layout_;
@@ -115,7 +114,7 @@ class OperandLayoutConstraint : public LayoutConstraint {
     return instruction_->operand(operand_no_);
   }
 
-  string ToString() const override;
+  std::string ToString() const override;
 
  private:
   ShapeLayout shape_layout_;
@@ -123,22 +122,59 @@ class OperandLayoutConstraint : public LayoutConstraint {
   int64_t operand_no_;
 };
 
-// Constraint on the layout of the result of the entry computation.
-class ResultLayoutConstraint : public LayoutConstraint {
+// Constraint on the layout of a computation interface.
+class ComputationLayoutConstraint : public LayoutConstraint {
  public:
-  explicit ResultLayoutConstraint(
-      const ShapeLayout& shape_layout, bool dfs = false,
-      int64_t priority = LayoutConstraint::kDefaultPriority)
-      : LayoutConstraint(/*mandatory=*/true, dfs),
-        shape_layout_(shape_layout) {}
+  static constexpr int64_t kDefaultLayoutIsUsed = 0;
+  static constexpr int64_t kResultLayoutIsSet = 1;
+  static constexpr int64_t kComputationLayoutIsSet = 2;
+  explicit ComputationLayoutConstraint(
+      const HloComputation* computation, ComputationLayout* computation_layout,
+      bool dfs = false, int64_t priority = LayoutConstraint::kDefaultPriority)
+      : LayoutConstraint(/*mandatory=*/true, dfs, priority),
+        layout_state_((computation_layout == nullptr)
+                          ? kDefaultLayoutIsUsed
+                          : kComputationLayoutIsSet),
+        computation_layout_(
+            (computation_layout == nullptr)
+                ? ComputationLayout(computation->ComputeProgramShape(),
+                                    /*ignore_layouts=*/false)
+                : *computation_layout) {}
 
-  const ShapeLayout& shape_layout() const { return shape_layout_; }
-  string ToString() const override;
+  const ComputationLayout& computation_layout() const {
+    return computation_layout_;
+  }
+  ComputationLayout& mutable_computation_layout() {
+    return computation_layout_;
+  }
+  void ResetComputationLayout(const ComputationLayout& layout) {
+    computation_layout_ = layout;
+    layout_state_ |= kComputationLayoutIsSet;
+  }
+  void ResetResultLayout(const ShapeLayout& shape_layout, bool use_dfs) {
+    CHECK(use_dfs && dfs());
+    *computation_layout_.mutable_result_layout() = shape_layout;
+    layout_state_ |= kResultLayoutIsSet;
+  }
+  bool computation_layout_is_set() const {
+    return layout_state_ & kComputationLayoutIsSet;
+  }
+  bool result_layout_is_set() const {
+    return layout_state_ & kResultLayoutIsSet;
+  }
+  bool default_layout_is_used() const {
+    return layout_state_ == kDefaultLayoutIsUsed;
+  }
+  std::string ToString() const override;
 
  private:
-  const ShapeLayout shape_layout_;
+  // The layout_state_ variable is used to remember whether the layout for
+  // the overall computation is explicitly set, whether its result layout is
+  // explicitly set, or whether it only stores the default layout of the
+  // computation.
+  int64_t layout_state_;
+  ComputationLayout computation_layout_;
 };
-
 
 // Contains constraints on the layout of channels; sends and recvs.
 class ChannelLayoutConstraints {
@@ -235,19 +271,14 @@ class LayoutAssignment : public HloModulePass {
                            const Shape& shape_with_layout, bool dfs = true);
 
     const ComputationLayout& computation_layout() const {
-      CHECK_NE(computation_layout_ptr_, nullptr);
-      return *computation_layout_ptr_;
+      return computation_constraint_.computation_layout();
     }
     void ResetComputationLayout(const ComputationLayout& layout) {
-      computation_layout_ = layout;
-      computation_layout_ptr_ = &computation_layout_;
+      computation_constraint_.ResetComputationLayout(layout);
     }
+
     ComputationLayout& mutable_computation_layout() {
-      CHECK_NE(computation_layout_ptr_, nullptr);
-      return *computation_layout_ptr_;
-    }
-    ComputationLayout* mutable_computation_layout_ptr() {
-      return computation_layout_ptr_;
+      return computation_constraint_.mutable_computation_layout();
     }
 
    private:
@@ -256,15 +287,8 @@ class LayoutAssignment : public HloModulePass {
     std::map<OperandConstraintKey, OperandLayoutConstraint>
         operand_constraints_;
 
-    // The result constraint for the computation (can be null).
-    std::unique_ptr<ResultLayoutConstraint> result_constraint_;
     HloComputation* computation_;
-    // The computation_layout_ptr_ is used to remember whether the layout for
-    // the computation is explicitly set,  and it is set to nullptr when the
-    // layout has not yet been explicitly set. The actual layout is saved in
-    // computation_layout_ for the purpose of memory management.
-    ComputationLayout* computation_layout_ptr_;
-    ComputationLayout computation_layout_;
+    ComputationLayoutConstraint computation_constraint_;
   };
 
   // Determines whether an instruction can change layouts. An instruction not
@@ -329,7 +353,7 @@ class LayoutAssignment : public HloModulePass {
       const OperandLayoutConstraint& operand_constraint,
       LayoutConstraints* constraints);
   virtual Status PropagateResultConstraint(
-      const ResultLayoutConstraint& layout_constraint,
+      const ComputationLayoutConstraint& layout_constraint,
       LayoutConstraints* constraints);
 
   virtual Layout GetUnconstrainedLayout(const LogicalBuffer& buffer) {
@@ -548,7 +572,7 @@ class LayoutAssignment : public HloModulePass {
   // CallGraph of the module, used to track callsites of each computation.
   std::unique_ptr<CallGraph> call_graph_;
 
-  string ToString(const LayoutConstraints& constraints) const;
+  std::string ToString(const LayoutConstraints& constraints) const;
 
  private:
   // Map containing the layouts of all computations assigned so
@@ -586,7 +610,7 @@ class LayoutAssignment : public HloModulePass {
       buffer_sets_cache_;
 
   // The set of BufferLayoutConstraints applied to the computation.
-  std::unordered_map<const LogicalBuffer*, BufferLayoutConstraint>
+  absl::node_hash_map<const LogicalBuffer*, BufferLayoutConstraint>
       buffer_constraints_;
 
   // A vector which holds constraints as they are added. Can be cleared with

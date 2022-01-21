@@ -42,12 +42,6 @@ StatusOr<GlobalDeviceId> Thunk::ExecuteParams::GetGlobalDeviceId() const {
       return "kConvolution";
     case Thunk::kCopy:
       return "kCopy";
-    case Thunk::kCudnnBatchNormBackward:
-      return "kCudnnBatchNormBackward";
-    case Thunk::kCudnnBatchNormForwardInference:
-      return "kCudnnBatchNormForwardInference";
-    case Thunk::kCudnnBatchNormForwardTraining:
-      return "kCudnnBatchNormForwardTraining";
     case Thunk::kCustomCall:
       return "kCustomCall";
     case Thunk::kNcclAllGather:
@@ -96,7 +90,7 @@ std::ostream& operator<<(std::ostream& os, Thunk::Kind kind) {
 std::string ThunkSequence::ToString(
     int indent,
     std::function<std::string(const Thunk*)> get_thunk_annotation) const {
-  const std::string indent_str(" ", indent * 2);
+  const std::string indent_str(indent * 2, ' ');
   if (empty()) return indent_str + "No thunks.";
 
   auto thunk_with_longest_kind = absl::c_max_element(
@@ -112,7 +106,8 @@ std::string ThunkSequence::ToString(
     // Write out the thunk kind, padded out to max_thunk_kind_len.
     absl::string_view kind_str = Thunk::KindToString(thunk->kind());
     absl::StrAppend(&result, indent_str, kind_str,
-                    string(max_thunk_kind_len - kind_str.length(), ' '), "\t");
+                    std::string(max_thunk_kind_len - kind_str.length(), ' '),
+                    "\t");
     if (get_thunk_annotation) {
       absl::StrAppend(&result, get_thunk_annotation(thunk.get()));
     }

@@ -28,6 +28,7 @@ traced (a process known as retracing).
 import abc
 from typing import Optional, Sequence
 from typing_extensions import Protocol
+from typing_extensions import runtime_checkable
 
 
 class TraceType(abc.ABC):
@@ -69,7 +70,8 @@ class TracingContext():
   pass
 
 
-class SupportsTracingType(Protocol):
+@runtime_checkable
+class SupportsTracingProtocol(Protocol):
   """The Trace Control Protocol for functions.
 
   Classes that implement this protocol can expect the TensorFlow function
@@ -77,7 +79,6 @@ class SupportsTracingType(Protocol):
   classes according to the behaviour specified by their TraceType.
   """
 
+  @abc.abstractmethod
   def __tf_tracing_type__(self, context: TracingContext) -> TraceType:
-    raise NotImplementedError(
-        "Class inheriting SupportsTracingType must implement __tf_tracing_type__"
-    )
+    pass

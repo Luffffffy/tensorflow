@@ -48,7 +48,6 @@ from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.saved_model import builder_impl
 from tensorflow.python.saved_model import function_serialization
-from tensorflow.python.saved_model import nested_structure_coder
 from tensorflow.python.saved_model import pywrap_saved_model
 from tensorflow.python.saved_model import registration
 from tensorflow.python.saved_model import revived_types
@@ -100,7 +99,7 @@ class _AugmentedGraphView(graph_view.ObjectGraphView):
   itself.
 
   Also tracks functions attached to objects in the graph, through the caching
-  `list_functions` method. Enumerating functions only through this method
+  `_list_functions` method. Enumerating functions only through this method
   ensures that we get a consistent view of functions, even if object attributes
   create new functions every time they are accessed.
   """
@@ -111,46 +110,32 @@ class _AugmentedGraphView(graph_view.ObjectGraphView):
     else:
       saveables_cache = None
     super(_AugmentedGraphView, self).__init__(root, saveables_cache)
-    # Object -> (name -> dep)
-    self._extra_dependencies = object_identity.ObjectIdentityDictionary()
-    self._functions = object_identity.ObjectIdentityDictionary()
+
+    # Cache the results of `GraphView.list_children()` to ensure that the
+    # `Trackable` children are gathered exactly once.
+    self._children_cache = object_identity.ObjectIdentityDictionary()
+
     # Cache shared between objects in the same object graph. This is passed to
-    # each trackable object's `_list_extra_dependencies_for_serialization` and
-    # `_list_functions_for_serialization` function.
+    # `Trackable._trackable_children()`.
     self._serialization_cache = object_identity.ObjectIdentityDictionary()
 
-  def add_object(self, parent_node, name_in_parent, subgraph_root):
-    """Attach an object to `parent_node`, overriding any existing dependency."""
-    self._extra_dependencies.setdefault(parent_node,
-                                        {})[name_in_parent] = subgraph_root
+  def set_signature(self, signature_map):
+    """Attach signature to the root object."""
+    self.list_children(self.root)
+    # Overrides existing dependency.
+    name = signature_serialization.SIGNATURE_ATTRIBUTE_NAME
+    self._children_cache[self.root][name] = signature_map
 
   def list_children(self, obj):
-    """Overrides parent method to include extra children."""
-    extra_dependencies = self.list_extra_children(obj)
-    extra_dependencies.update(self._extra_dependencies.get(obj, {}))
-
-    used_names = set()
-    for name, dep in super(_AugmentedGraphView, self).list_children(obj):
-      used_names.add(name)
-      if name in extra_dependencies:
-        # Extra dependencies (except for `.signatures`, which is always added
-        # when saving) should not have naming conflicts with dependencies
-        # defined by the user.
-        if name != signature_serialization.SIGNATURE_ATTRIBUTE_NAME:
-          obj_identifier = obj._object_identifier  # pylint: disable=protected-access
-          raise ValueError(
-              f"Error when exporting object {obj} with identifier "
-              f"'{obj_identifier}'. The object has an attribute named "
-              f"'{name}', which is reserved. List of all reserved attributes: "
-              f"{list(extra_dependencies.keys())}")
-
-        yield base.TrackableReference(name, extra_dependencies[name])
-      else:
-        yield base.TrackableReference(name, dep)
-    for name, dep in extra_dependencies.items():
-      if name in used_names:
-        continue
-      yield base.TrackableReference(name, dep)
+    """Lists children of `obj` for SavedModel."""
+    if obj not in self._children_cache:
+      self._children_cache[obj] = dict(
+          super(_AugmentedGraphView, self).list_children(
+              obj,
+              save_type=base.SaveType.SAVEDMODEL,
+              cache=self._serialization_cache))
+    for name, child in self._children_cache[obj].items():
+      yield base.TrackableReference(name, child)
 
   def list_dependencies(self, obj):
     """Yields `Trackables` that must be loaded before `obj`.
@@ -178,19 +163,6 @@ class _AugmentedGraphView(graph_view.ObjectGraphView):
             f"object {obj}.")
       yield name, dep
 
-  def list_extra_children(self, obj):
-    """Returns children that are only added when exporting SavedModel."""
-    return obj._list_extra_dependencies_for_serialization(  # pylint: disable=protected-access
-        self._serialization_cache)
-
-  def list_functions(self, obj):
-    obj_functions = self._functions.get(obj, None)
-    if obj_functions is None:
-      obj_functions = obj._list_functions_for_serialization(  # pylint: disable=protected-access
-          self._serialization_cache)
-      self._functions[obj] = obj_functions
-    return obj_functions
-
 
 class _SaveableView(object):
   """Provides a frozen view over a trackable root.
@@ -202,32 +174,29 @@ class _SaveableView(object):
   different objects if invoked more than once.
 
   Changes to the graph, for example adding objects, must happen in
-  `checkpoint_view` (an `_AugmentedGraphView`) before the `_SaveableView` is
-  constructed. Changes after the `_SaveableView` has been constructed will be
+  `augmented_graph_view` (an `_AugmentedGraphView`) before the `_SaveableView`
+  is constructed. Changes after the `_SaveableView` has been constructed will be
   ignored.
   """
 
-  def __init__(self, checkpoint_view, options, wrapped_functions=None):
+  def __init__(self, augmented_graph_view, options, wrapped_functions=None):
     """Initializes a SaveableView.
 
     Args:
-      checkpoint_view: A GraphView object.
+      augmented_graph_view: A GraphView object.
       options: A SaveOptions instance.
       wrapped_functions: Dictionary that maps concrete functions to functions
         that do not capture cached variable values.
     """
 
-    self.checkpoint_view = checkpoint_view
+    self.augmented_graph_view = augmented_graph_view
     self._options = options
     # Maps functions -> wrapped functions that capture variables
     self._wrapped_functions = wrapped_functions or {}
-    # Run through the nodes in the object graph first for side effects of
-    # creating variables.
-    self._trace_all_concrete_functions()
 
     (self._trackable_objects, self.node_paths, self.node_ids,
      self._slot_variables, self.object_names) = (
-         self.checkpoint_view.objects_ids_and_slot_variables_and_paths())
+         self.augmented_graph_view.objects_ids_and_slot_variables_and_paths())
 
     self._initialize_save_and_restore_functions()
     self._initialize_nodes_and_concrete_functions()
@@ -256,8 +225,12 @@ class _SaveableView(object):
     of the object loaded from the SavedModel. These functions are recorded in
     the `saveable_objects` map in the `SavedObject` proto.
     """
-    checkpoint_factory_map = graph_view.get_checkpoint_factories_and_keys(
-        self.object_names)
+    checkpoint_factory_map, registered_savers = (
+        graph_view.get_checkpoint_factories_and_keys(self.object_names))
+    self._obj_to_registered_saver = object_identity.ObjectIdentityDictionary()
+    for saver_name, trackables in registered_savers.items():
+      for trackable in trackables.values():
+        self._obj_to_registered_saver[trackable] = saver_name
     self._saveable_objects_map = (
         _gen_save_and_restore_functions(checkpoint_factory_map))
 
@@ -274,9 +247,9 @@ class _SaveableView(object):
     self._seen_function_names = set()
     self._untraced_functions = []
 
-    for obj in self._trackable_objects:
-      for function in self.checkpoint_view.list_functions(obj).values():
-        self._add_function_to_graph(function)
+    for obj in self.nodes:
+      if isinstance(obj, (def_function.Function, defun.ConcreteFunction)):
+        self._add_function_to_graph(obj)
 
       if obj in self._saveable_objects_map:
         for save_fn, restore_fn in self._saveable_objects_map[obj].values():
@@ -296,38 +269,39 @@ class _SaveableView(object):
     return self.concrete_functions + self.gradient_functions
 
   def _add_function_to_graph(self, function):
-    """Adds function to serialize to object graph."""
-    # Updates self.nodes, self.node_ids, self.concrete_functions,
-    # and self._untraced_functions.
+    """Adds a function to serialize to the object graph.
+
+    If `function` is a concrete function, it will be added to the list of
+    concrete functions tracked by `_SaveableView`. If the function is a
+    tf.function, any underlying concrete functions will be added to the list of
+    concrete functions for later serialization.
+
+    Args:
+      function: a `def_function.Function` or `ConcreteFunction`
+    """
+    # Add the function to the graph
     if function not in self.node_ids:
       self.node_ids[function] = len(self.nodes)
-      # Add the function to nodes as well.
       self.nodes.append(function)
+
+    # Gather the concrete function(s)
     if isinstance(function, def_function.Function):
       concrete_functions = (
           function._list_all_concrete_functions_for_serialization())  # pylint: disable=protected-access
     else:
       concrete_functions = [function]
+
+    # Keep track of untraced functions for later reporting to the user
     if not concrete_functions:
-      self._untraced_functions.append(function._name)  # pylint: disable=protected-access
+      self._untraced_functions.append(function.name)
+
+    # Add the concrete functions for later serialization
     for concrete_function in concrete_functions:
+      # Users can attach the same tf.function to their model multiple times,
+      # so we deduplicate their underlying concrete functions.
       if concrete_function.name not in self._seen_function_names:
         self.concrete_functions.append(concrete_function)
         self._seen_function_names.add(concrete_function.name)
-
-  def _trace_all_concrete_functions(self):
-    """Trace concrete functions to force side-effects.
-
-    Lists the concrete functions in order to:
-      - populate the cache for functions that have an input_signature
-        and have not been called
-      - force side effects of creation of concrete functions, e.g. create
-        variables on first run.
-    """
-    for obj in self.checkpoint_view.list_objects():
-      for function in self.checkpoint_view.list_functions(obj).values():
-        if isinstance(function, def_function.Function):
-          function._list_all_concrete_functions_for_serialization()  # pylint: disable=protected-access
 
   @property
   def root(self):
@@ -344,28 +318,27 @@ class _SaveableView(object):
           (def_function.Function, defun.ConcreteFunction, _CapturedConstant,
            _CapturedTensor)):
         continue
-      for child in self.checkpoint_view.list_children(node):
+      for child in self.augmented_graph_view.list_children(node):
         child_proto = object_proto.children.add()
         child_proto.node_id = self.node_ids[child.ref]
         child_proto.local_name = child.name
-      for name, ref in self.checkpoint_view.list_dependencies(node):
+      for name, ref in self.augmented_graph_view.list_dependencies(node):
         child_proto = object_proto.dependencies.add()
         child_proto.node_id = self.node_ids[ref]
         child_proto.local_name = name
-      for local_name, ref_function in (
-          self.checkpoint_view.list_functions(node).items()):
-        child_proto = object_proto.children.add()
-        child_proto.node_id = self.node_ids[ref_function]
-        child_proto.local_name = local_name
 
-      if node not in self._saveable_objects_map:
-        continue
+      if node in self._saveable_objects_map:
+        assert node not in self._obj_to_registered_saver, (
+            "Objects can't have both SaveableObjects and a registered saver")
 
-      for local_name, (save_fn, restore_fn) in (
-          self._saveable_objects_map[node].items()):
-        saveable_object_proto = object_proto.saveable_objects[local_name]
-        saveable_object_proto.save_function = self.node_ids[save_fn]
-        saveable_object_proto.restore_function = self.node_ids[restore_fn]
+        for local_name, (save_fn, restore_fn) in (
+            self._saveable_objects_map[node].items()):
+          saveable_object_proto = object_proto.saveable_objects[local_name]
+          saveable_object_proto.save_function = self.node_ids[save_fn]
+          saveable_object_proto.restore_function = self.node_ids[restore_fn]
+
+      elif node in self._obj_to_registered_saver:
+        object_proto.registered_saver = self._obj_to_registered_saver[node]
 
   def map_resources(self):
     """Makes new resource handle ops corresponding to existing resource tensors.
@@ -386,8 +359,8 @@ class _SaveableView(object):
     """
     # Only makes sense when adding to the export Graph
     assert not context.executing_eagerly()
-    # TODO(allenl): Handle MirroredVariables and other types of variables which
-    # may need special casing.
+    # TODO(b/205007558): Handle MirroredVariables and other types of variables
+    # which may need special casing.
     object_map = object_identity.ObjectIdentityDictionary()
     resource_map = {}
     asset_info = _AssetInfo(
@@ -759,7 +732,7 @@ def _process_asset(trackable_asset, asset_info, resource_map):
   path = builder_impl.get_asset_filename_to_add(
       asset_filepath=original_path,
       asset_filename_map=asset_info.asset_filename_map)
-  # TODO(andresp): Instead of mapping 1-1 between trackable asset
+  # TODO(b/205008097): Instead of mapping 1-1 between trackable asset
   # and asset in the graph def consider deduping the assets that
   # point to the same file.
   asset_path_initializer = array_ops.placeholder(
@@ -953,11 +926,15 @@ def _fill_meta_graph_def(meta_graph_def, saveable_view, signature_functions,
   # gathering from the eager context so Optimizers save the right set of
   # variables, but want any operations associated with the save/restore to be in
   # the exported graph (thus the `to_graph` argument).
-  saver = functional_saver.MultiDeviceSaver(
-      saveable_view.checkpoint_view.frozen_saveable_objects(
+  call_with_mapped_captures = functools.partial(
+      _call_function_with_mapped_captures, resource_map=resource_map)
+  named_saveable_objects, registered_savers = (
+      saveable_view.augmented_graph_view.frozen_saveables_and_savers(
           object_map=object_map, to_graph=exported_graph,
-          call_with_mapped_captures=functools.partial(
-              _call_function_with_mapped_captures, resource_map=resource_map)))
+          call_with_mapped_captures=call_with_mapped_captures))
+  saver = functional_saver.MultiDeviceSaver(named_saveable_objects,
+                                            registered_savers,
+                                            call_with_mapped_captures)
 
   with exported_graph.as_default():
     signatures = _generate_signatures(signature_functions, resource_map)
@@ -1048,14 +1025,14 @@ def _validate_dependencies(saveble_view):
         (def_function.Function, defun.ConcreteFunction, _CapturedConstant,
          _CapturedTensor)):
       continue  # These are not `Trackable` and therefore have no dependencies.
-    for _, dep in saveble_view.checkpoint_view.list_dependencies(node):
+    for _, dep in saveble_view.augmented_graph_view.list_dependencies(node):
       if dep not in saveble_view.node_ids:
         node_path = trackable_utils.pretty_print_node_path(
             saveble_view.node_paths[node])
         raise ValueError(
             f"Found an untracked dependency. Object {node_path} depends "
             f"on {dep}, but this dependency isn't listed as a child. "
-            "Please track this child by overriding `_checkpoint_dependencies` "
+            "Please track this child by overriding `_trackable_children` "
             "or use `._track_trackable`.")
       deps.append(saveble_view.node_ids[dep])
   try:
@@ -1087,12 +1064,11 @@ def _serialize_object_graph(saveable_view, asset_file_def_index):
   proto = saved_object_graph_pb2.SavedObjectGraph()
   saveable_view.fill_object_graph_proto(proto)
 
-  coder = nested_structure_coder.StructureCoder()
   for concrete_function in saveable_view.concrete_and_gradient_functions:
     name = compat.as_text(concrete_function.name)
     name = saveable_view.function_name_map.get(name, name)
     serialized = function_serialization.serialize_concrete_function(
-        concrete_function, saveable_view.captured_tensor_node_ids, coder)
+        concrete_function, saveable_view.captured_tensor_node_ids)
     if serialized is not None:
       proto.concrete_functions[name].CopyFrom(serialized)
 
@@ -1136,7 +1112,7 @@ def _write_object_proto(obj, proto, asset_file_def_index, function_name_map):
       # pylint:enable=protected-access
     proto.user_object.CopyFrom(registered_type_proto)
 
-  registered_name = registration.get_registered_name(obj)
+  registered_name = registration.get_registered_class_name(obj)
   if registered_name:
     proto.registered_name = registered_name
     serialized_user_proto = obj._serialize_to_proto()  # pylint: disable=protected-access
@@ -1383,7 +1359,7 @@ def save_and_return_nodes(obj,
       the root node to the key node)
   """
   options = options or save_options.SaveOptions()
-  # TODO(allenl): Factor out some subset of SavedModelBuilder which is 2.x
+  # TODO(b/205008509): Factor out some subset of SavedModelBuilder which is 2.x
   # compatible (no sessions) and share it with this export API rather than
   # making a SavedModel proto and writing it directly.
   saved_model = saved_model_pb2.SavedModel()
@@ -1496,33 +1472,28 @@ def _build_meta_graph_impl(obj,
         f"with type {type(obj)}.")
   meta_graph_def = meta_graph_def or meta_graph_pb2.MetaGraphDef()
 
-  checkpoint_graph_view = _AugmentedGraphView(obj)
+  augmented_graph_view = _AugmentedGraphView(obj)
   if signatures is None:
     signatures = signature_serialization.find_function_to_export(
-        checkpoint_graph_view)
+        augmented_graph_view)
 
   signatures, wrapped_functions = (
       signature_serialization.canonicalize_signatures(signatures))
-  signature_serialization.validate_saveable_view(checkpoint_graph_view)
+  signature_serialization.validate_augmented_graph_view(augmented_graph_view)
   signature_map = signature_serialization.create_signature_map(signatures)
-  checkpoint_graph_view.add_object(
-      parent_node=checkpoint_graph_view.root,
-      name_in_parent=signature_serialization.SIGNATURE_ATTRIBUTE_NAME,
-      subgraph_root=signature_map)
+  augmented_graph_view.set_signature(signature_map)
 
   # Use _SaveableView to provide a frozen listing of properties and functions.
-  saveable_view = _SaveableView(checkpoint_graph_view, options,
+  saveable_view = _SaveableView(augmented_graph_view, options,
                                 wrapped_functions)
-  object_saver = util.TrackableSaver(checkpoint_graph_view)
+  object_saver = util.TrackableSaver(augmented_graph_view)
   asset_info, exported_graph = _fill_meta_graph_def(
       meta_graph_def, saveable_view, signatures,
       options.namespace_whitelist, options.experimental_custom_gradients)
   if options.function_aliases:
     function_aliases = meta_graph_def.meta_info_def.function_aliases
     for alias, func in options.function_aliases.items():
-      for fdef in func._stateful_fn._function_cache.all_values():  # pylint: disable=protected-access
-        function_aliases[fdef.name] = alias
-      for fdef in func._stateless_fn._function_cache.all_values():  # pylint: disable=protected-access
+      for fdef in func._list_all_concrete_functions():  # pylint: disable=protected-access
         function_aliases[fdef.name] = alias
 
   object_graph_proto = _serialize_object_graph(

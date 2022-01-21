@@ -90,3 +90,21 @@ def TestSideEffectAnalysisPass : Pass<"tf-test-side-effect-analysis", "ModuleOp"
   }];
   let constructor = "::mlir::tf_test::CreateTestSideEffectAnalysisPass()";
 }
+
+def LiftVariablesInvalidSessionTestPass : Pass<"tf-saved-model-lift-variables-invalid-session-test", "ModuleOp"> {
+  let summary = "Lift variables and save them as global tensors with an invalid "
+           "session";
+  let constructor = "mlir::tf_test::CreateLiftVariablesInvalidSessionTestPass()";
+}
+
+def LiftVariablesTestPass : Pass<"tf-saved-model-lift-variables-test", "ModuleOp"> {
+  let summary = "Lift variables and save them as global tensors";
+  let constructor = "mlir::tf_test::CreateLiftVariablesTestPass()";
+}
+
+def InitializeVariablesInSessionInitializerPass : Pass<"tf-saved-model-initialize-variables-in-session-init", "ModuleOp"> {
+  let summary = "Initialize variables in session initializer function.";
+
+  let constructor = "mlir::tf_test::CreateInitializeVariablesInSessionInitializerTestPass()";
+}
+

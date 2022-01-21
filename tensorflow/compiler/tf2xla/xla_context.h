@@ -105,14 +105,17 @@ class XlaContext : public ResourceBase {
   // The name of the XlaContext resource during symbolic graph execution.
   static const char kXlaContextResourceName[];
 
+  // Records the collective information from the nested compilation `result`.
+  Status RecordCollectiveInfoFromNestedCompilationResult(
+      const XlaCompilationResult& result);
+
   // Records the collective configurations for all the collectives in the XLA
   // cluster and returns the channel_id to be used for the next collective.
-  StatusOr<int64_t> RecordCollectiveReduceV2OpInfo(int group_key,
-                                                   int group_size);
+  StatusOr<int64_t> RecordCollectiveInfo(int group_key, int group_size);
 
-  const absl::optional<XlaCompilationResult::CollectiveReduceV2OpInfo>&
-  GetCollectiveReduceV2OpInfo() {
-    return collective_reduce_info_;
+  const absl::optional<XlaCompilationResult::CollectiveInfo>&
+  GetCollectiveInfo() {
+    return collective_info_;
   }
 
  private:
@@ -134,10 +137,9 @@ class XlaContext : public ResourceBase {
   // Holds ownership of resources. The resources are not ordered.
   std::vector<std::unique_ptr<XlaResource>> resources_;
 
-  // Information about encountered CollectiveReduceV2OpInfo ops. We allow only a
+  // Information about encountered collective ops. We allow only a
   // single configuration per cluster.
-  absl::optional<XlaCompilationResult::CollectiveReduceV2OpInfo>
-      collective_reduce_info_;
+  absl::optional<XlaCompilationResult::CollectiveInfo> collective_info_;
 
   // Cache of prebuilt computations indexed by their type.
   using ComputationMap = std::map<DataType, xla::XlaComputation>;

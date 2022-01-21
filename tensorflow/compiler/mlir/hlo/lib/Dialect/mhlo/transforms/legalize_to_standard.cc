@@ -135,7 +135,7 @@ class ConvertIotaOp : public OpRewritePattern<mhlo::IotaOp> {
     values.reserve(output_size);
 
     int64_t increase_stride = output_size;
-    for (int i = 0; i <= dimension; i++) {
+    for (uint64_t i = 0; i <= dimension; i++) {
       increase_stride /= output_type.getDimSize(i);
     }
 
@@ -187,7 +187,7 @@ struct LegalizeToStandardPass
   }
 
   /// Perform the lowering to Standard dialect.
-  void runOnFunction() override;
+  void runOnOperation() override;
 };
 }  // end anonymous namespace
 
@@ -202,10 +202,10 @@ void PopulateMhloToStdPatterns(OwningRewritePatternList *patterns,
 }
 
 /// Perform the lowering to standard dialect.
-void LegalizeToStandardPass::runOnFunction() {
+void LegalizeToStandardPass::runOnOperation() {
   OwningRewritePatternList patterns(&getContext());
   mlir::mhlo::PopulateMhloToStdPatterns(&patterns, &getContext());
-  (void)applyPatternsAndFoldGreedily(getFunction(), std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
 }
 
 }  // end namespace mhlo

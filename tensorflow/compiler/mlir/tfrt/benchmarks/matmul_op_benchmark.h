@@ -33,13 +33,13 @@ using ::tfrt::RCReference;
 using ::tfrt::RemainingResults;
 using ::tfrt::RequestContext;
 using ::tfrt::RequestContextBuilder;
-using ::tfrt::cpu::jit::Executable;
-using ::tfrt::cpu::jit::JitExecutable;
-using ::tfrt::cpu::jit::MemrefDesc;
-using ::tfrt::cpu::jit::ReturnValueConverter;
+using ::tfrt::jitrt::Executable;
+using ::tfrt::jitrt::JitExecutable;
+using ::tfrt::jitrt::MemrefDesc;
+using ::tfrt::jitrt::ReturnValueConverter;
 
 // -------------------------------------------------------------------------- //
-// Run benchmark by compiling MLIR function using TFRT CPURT API.
+// Run benchmark by compiling MLIR function using TFRT JitRt API.
 // -------------------------------------------------------------------------- //
 
 template <typename T>
@@ -53,10 +53,10 @@ void RunMatMulMlirBenchmark(::testing::benchmark::State& state,
 
   std::unique_ptr<HostContext> host = CreateSingleThreadedHostContext();
 
-  TfCpuRtPipelineOptions tf_cpurt_opts;
+  TfJitRtPipelineOptions tf_jitrt_opts;
   JitExecutable& jit_executable =
       CreateJitExecutable(*host, mlir_input, function_name,
-                          /*lower_from_tensorflow=*/true, tf_cpurt_opts);
+                          /*lower_from_tensorflow=*/true, tf_jitrt_opts);
 
   // Build an ExecutionContext from the HostContext.
   llvm::Expected<RCReference<RequestContext>> req_ctx =
@@ -81,24 +81,27 @@ void RunMatMulMlirBenchmark(::testing::benchmark::State& state,
   converter.AddConversion(FreeReturnedMemref);
 
   // Get an executable that might be specialized to the operands.
-  AsyncValuePtr<Executable> executable =
+  llvm::Expected<AsyncValuePtr<Executable>> executable =
       jit_executable.GetExecutable(operands, exec_ctx);
+  if (auto err = executable.takeError())
+    LOG(FATAL) << "Failed to specialize executable";
 
   // Wait for the compilation completion.
-  host->Await({executable.CopyRef()});
+  host->Await({executable->CopyRef()});
 
-  CHECK(!executable.IsError())
-      << "Failed to get executable: " << StrCat(executable.GetError());
-  CHECK(!executable->IsAsync()) << "async results are not supported";
+  CHECK(!executable->IsError())
+      << "Failed to get executable: " << StrCat(executable->GetError());
+  CHECK(!(*executable)->IsAsync()) << "async results are not supported";
 
   // Initialize call frame with MemrefDesc operands.
   Executable::CallFrame call_frame;
-  if (auto err = executable->InitializeCallFrame(operands, &call_frame))
+  if (auto err = (*executable)->InitializeCallFrame(operands, &call_frame))
     LOG(FATAL) << "Failed to initialize call frame";
 
   for (auto _ : state) {
-    executable->Execute(call_frame, exec_ctx);
-    if (auto err = executable->ReturnResults(converter, exec_ctx, &call_frame))
+    (*executable)->Execute(call_frame, exec_ctx);
+    if (auto err =
+            (*executable)->ReturnResults(converter, exec_ctx, &call_frame))
       LOG(FATAL) << "Failed to return compiled kernel results";
   }
 

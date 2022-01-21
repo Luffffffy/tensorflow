@@ -388,6 +388,12 @@ struct AssignVariableOptionsT;
 struct RandomOptions;
 struct RandomOptionsT;
 
+struct BucketizeOptions;
+struct BucketizeOptionsT;
+
+struct GeluOptions;
+struct GeluOptionsT;
+
 struct OperatorCode;
 struct OperatorCodeT;
 
@@ -858,11 +864,15 @@ enum BuiltinOperator {
   BuiltinOperator_ASSIGN_VARIABLE = 144,
   BuiltinOperator_BROADCAST_ARGS = 145,
   BuiltinOperator_RANDOM_STANDARD_NORMAL = 146,
+  BuiltinOperator_BUCKETIZE = 147,
+  BuiltinOperator_RANDOM_UNIFORM = 148,
+  BuiltinOperator_MULTINOMIAL = 149,
+  BuiltinOperator_GELU = 150,
   BuiltinOperator_MIN = BuiltinOperator_ADD,
-  BuiltinOperator_MAX = BuiltinOperator_RANDOM_STANDARD_NORMAL
+  BuiltinOperator_MAX = BuiltinOperator_GELU
 };
 
-inline const BuiltinOperator (&EnumValuesBuiltinOperator())[147] {
+inline const BuiltinOperator (&EnumValuesBuiltinOperator())[151] {
   static const BuiltinOperator values[] = {
     BuiltinOperator_ADD,
     BuiltinOperator_AVERAGE_POOL_2D,
@@ -1010,13 +1020,17 @@ inline const BuiltinOperator (&EnumValuesBuiltinOperator())[147] {
     BuiltinOperator_READ_VARIABLE,
     BuiltinOperator_ASSIGN_VARIABLE,
     BuiltinOperator_BROADCAST_ARGS,
-    BuiltinOperator_RANDOM_STANDARD_NORMAL
+    BuiltinOperator_RANDOM_STANDARD_NORMAL,
+    BuiltinOperator_BUCKETIZE,
+    BuiltinOperator_RANDOM_UNIFORM,
+    BuiltinOperator_MULTINOMIAL,
+    BuiltinOperator_GELU
   };
   return values;
 }
 
 inline const char * const *EnumNamesBuiltinOperator() {
-  static const char * const names[148] = {
+  static const char * const names[152] = {
     "ADD",
     "AVERAGE_POOL_2D",
     "CONCATENATION",
@@ -1164,13 +1178,17 @@ inline const char * const *EnumNamesBuiltinOperator() {
     "ASSIGN_VARIABLE",
     "BROADCAST_ARGS",
     "RANDOM_STANDARD_NORMAL",
+    "BUCKETIZE",
+    "RANDOM_UNIFORM",
+    "MULTINOMIAL",
+    "GELU",
     nullptr
   };
   return names;
 }
 
 inline const char *EnumNameBuiltinOperator(BuiltinOperator e) {
-  if (flatbuffers::IsOutRange(e, BuiltinOperator_ADD, BuiltinOperator_RANDOM_STANDARD_NORMAL)) return "";
+  if (flatbuffers::IsOutRange(e, BuiltinOperator_ADD, BuiltinOperator_GELU)) return "";
   const size_t index = static_cast<size_t>(e);
   return EnumNamesBuiltinOperator()[index];
 }
@@ -1291,11 +1309,13 @@ enum BuiltinOptions {
   BuiltinOptions_ReadVariableOptions = 112,
   BuiltinOptions_AssignVariableOptions = 113,
   BuiltinOptions_RandomOptions = 114,
+  BuiltinOptions_BucketizeOptions = 115,
+  BuiltinOptions_GeluOptions = 116,
   BuiltinOptions_MIN = BuiltinOptions_NONE,
-  BuiltinOptions_MAX = BuiltinOptions_RandomOptions
+  BuiltinOptions_MAX = BuiltinOptions_GeluOptions
 };
 
-inline const BuiltinOptions (&EnumValuesBuiltinOptions())[115] {
+inline const BuiltinOptions (&EnumValuesBuiltinOptions())[117] {
   static const BuiltinOptions values[] = {
     BuiltinOptions_NONE,
     BuiltinOptions_Conv2DOptions,
@@ -1411,13 +1431,15 @@ inline const BuiltinOptions (&EnumValuesBuiltinOptions())[115] {
     BuiltinOptions_VarHandleOptions,
     BuiltinOptions_ReadVariableOptions,
     BuiltinOptions_AssignVariableOptions,
-    BuiltinOptions_RandomOptions
+    BuiltinOptions_RandomOptions,
+    BuiltinOptions_BucketizeOptions,
+    BuiltinOptions_GeluOptions
   };
   return values;
 }
 
 inline const char * const *EnumNamesBuiltinOptions() {
-  static const char * const names[116] = {
+  static const char * const names[118] = {
     "NONE",
     "Conv2DOptions",
     "DepthwiseConv2DOptions",
@@ -1533,13 +1555,15 @@ inline const char * const *EnumNamesBuiltinOptions() {
     "ReadVariableOptions",
     "AssignVariableOptions",
     "RandomOptions",
+    "BucketizeOptions",
+    "GeluOptions",
     nullptr
   };
   return names;
 }
 
 inline const char *EnumNameBuiltinOptions(BuiltinOptions e) {
-  if (flatbuffers::IsOutRange(e, BuiltinOptions_NONE, BuiltinOptions_RandomOptions)) return "";
+  if (flatbuffers::IsOutRange(e, BuiltinOptions_NONE, BuiltinOptions_GeluOptions)) return "";
   const size_t index = static_cast<size_t>(e);
   return EnumNamesBuiltinOptions()[index];
 }
@@ -2002,6 +2026,14 @@ template<> struct BuiltinOptionsTraits<tflite::AssignVariableOptions> {
 
 template<> struct BuiltinOptionsTraits<tflite::RandomOptions> {
   static const BuiltinOptions enum_value = BuiltinOptions_RandomOptions;
+};
+
+template<> struct BuiltinOptionsTraits<tflite::BucketizeOptions> {
+  static const BuiltinOptions enum_value = BuiltinOptions_BucketizeOptions;
+};
+
+template<> struct BuiltinOptionsTraits<tflite::GeluOptions> {
+  static const BuiltinOptions enum_value = BuiltinOptions_GeluOptions;
 };
 
 struct BuiltinOptionsUnion {
@@ -2947,6 +2979,22 @@ struct BuiltinOptionsUnion {
   const tflite::RandomOptionsT *AsRandomOptions() const {
     return type == BuiltinOptions_RandomOptions ?
       reinterpret_cast<const tflite::RandomOptionsT *>(value) : nullptr;
+  }
+  tflite::BucketizeOptionsT *AsBucketizeOptions() {
+    return type == BuiltinOptions_BucketizeOptions ?
+      reinterpret_cast<tflite::BucketizeOptionsT *>(value) : nullptr;
+  }
+  const tflite::BucketizeOptionsT *AsBucketizeOptions() const {
+    return type == BuiltinOptions_BucketizeOptions ?
+      reinterpret_cast<const tflite::BucketizeOptionsT *>(value) : nullptr;
+  }
+  tflite::GeluOptionsT *AsGeluOptions() {
+    return type == BuiltinOptions_GeluOptions ?
+      reinterpret_cast<tflite::GeluOptionsT *>(value) : nullptr;
+  }
+  const tflite::GeluOptionsT *AsGeluOptions() const {
+    return type == BuiltinOptions_GeluOptions ?
+      reinterpret_cast<const tflite::GeluOptionsT *>(value) : nullptr;
   }
 };
 
@@ -10366,8 +10414,8 @@ flatbuffers::Offset<AssignVariableOptions> CreateAssignVariableOptions(flatbuffe
 
 struct RandomOptionsT : public flatbuffers::NativeTable {
   typedef RandomOptions TableType;
-  int32_t seed;
-  int32_t seed2;
+  int64_t seed;
+  int64_t seed2;
   RandomOptionsT()
       : seed(0),
         seed2(0) {
@@ -10380,16 +10428,16 @@ struct RandomOptions FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
     VT_SEED = 4,
     VT_SEED2 = 6
   };
-  int32_t seed() const {
-    return GetField<int32_t>(VT_SEED, 0);
+  int64_t seed() const {
+    return GetField<int64_t>(VT_SEED, 0);
   }
-  int32_t seed2() const {
-    return GetField<int32_t>(VT_SEED2, 0);
+  int64_t seed2() const {
+    return GetField<int64_t>(VT_SEED2, 0);
   }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
-           VerifyField<int32_t>(verifier, VT_SEED) &&
-           VerifyField<int32_t>(verifier, VT_SEED2) &&
+           VerifyField<int64_t>(verifier, VT_SEED) &&
+           VerifyField<int64_t>(verifier, VT_SEED2) &&
            verifier.EndTable();
   }
   RandomOptionsT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -10400,11 +10448,11 @@ struct RandomOptions FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
 struct RandomOptionsBuilder {
   flatbuffers::FlatBufferBuilder &fbb_;
   flatbuffers::uoffset_t start_;
-  void add_seed(int32_t seed) {
-    fbb_.AddElement<int32_t>(RandomOptions::VT_SEED, seed, 0);
+  void add_seed(int64_t seed) {
+    fbb_.AddElement<int64_t>(RandomOptions::VT_SEED, seed, 0);
   }
-  void add_seed2(int32_t seed2) {
-    fbb_.AddElement<int32_t>(RandomOptions::VT_SEED2, seed2, 0);
+  void add_seed2(int64_t seed2) {
+    fbb_.AddElement<int64_t>(RandomOptions::VT_SEED2, seed2, 0);
   }
   explicit RandomOptionsBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -10420,8 +10468,8 @@ struct RandomOptionsBuilder {
 
 inline flatbuffers::Offset<RandomOptions> CreateRandomOptions(
     flatbuffers::FlatBufferBuilder &_fbb,
-    int32_t seed = 0,
-    int32_t seed2 = 0) {
+    int64_t seed = 0,
+    int64_t seed2 = 0) {
   RandomOptionsBuilder builder_(_fbb);
   builder_.add_seed2(seed2);
   builder_.add_seed(seed);
@@ -10429,6 +10477,123 @@ inline flatbuffers::Offset<RandomOptions> CreateRandomOptions(
 }
 
 flatbuffers::Offset<RandomOptions> CreateRandomOptions(flatbuffers::FlatBufferBuilder &_fbb, const RandomOptionsT *_o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
+
+struct BucketizeOptionsT : public flatbuffers::NativeTable {
+  typedef BucketizeOptions TableType;
+  std::vector<float> boundaries;
+  BucketizeOptionsT() {
+  }
+};
+
+struct BucketizeOptions FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef BucketizeOptionsT NativeTableType;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_BOUNDARIES = 4
+  };
+  const flatbuffers::Vector<float> *boundaries() const {
+    return GetPointer<const flatbuffers::Vector<float> *>(VT_BOUNDARIES);
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyOffset(verifier, VT_BOUNDARIES) &&
+           verifier.VerifyVector(boundaries()) &&
+           verifier.EndTable();
+  }
+  BucketizeOptionsT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
+  void UnPackTo(BucketizeOptionsT *_o, const flatbuffers::resolver_function_t *_resolver = nullptr) const;
+  static flatbuffers::Offset<BucketizeOptions> Pack(flatbuffers::FlatBufferBuilder &_fbb, const BucketizeOptionsT* _o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
+};
+
+struct BucketizeOptionsBuilder {
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_boundaries(flatbuffers::Offset<flatbuffers::Vector<float>> boundaries) {
+    fbb_.AddOffset(BucketizeOptions::VT_BOUNDARIES, boundaries);
+  }
+  explicit BucketizeOptionsBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  BucketizeOptionsBuilder &operator=(const BucketizeOptionsBuilder &);
+  flatbuffers::Offset<BucketizeOptions> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<BucketizeOptions>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<BucketizeOptions> CreateBucketizeOptions(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    flatbuffers::Offset<flatbuffers::Vector<float>> boundaries = 0) {
+  BucketizeOptionsBuilder builder_(_fbb);
+  builder_.add_boundaries(boundaries);
+  return builder_.Finish();
+}
+
+inline flatbuffers::Offset<BucketizeOptions> CreateBucketizeOptionsDirect(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    const std::vector<float> *boundaries = nullptr) {
+  auto boundaries__ = boundaries ? _fbb.CreateVector<float>(*boundaries) : 0;
+  return tflite::CreateBucketizeOptions(
+      _fbb,
+      boundaries__);
+}
+
+flatbuffers::Offset<BucketizeOptions> CreateBucketizeOptions(flatbuffers::FlatBufferBuilder &_fbb, const BucketizeOptionsT *_o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
+
+struct GeluOptionsT : public flatbuffers::NativeTable {
+  typedef GeluOptions TableType;
+  bool approximate;
+  GeluOptionsT()
+      : approximate(false) {
+  }
+};
+
+struct GeluOptions FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef GeluOptionsT NativeTableType;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_APPROXIMATE = 4
+  };
+  bool approximate() const {
+    return GetField<uint8_t>(VT_APPROXIMATE, 0) != 0;
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<uint8_t>(verifier, VT_APPROXIMATE) &&
+           verifier.EndTable();
+  }
+  GeluOptionsT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
+  void UnPackTo(GeluOptionsT *_o, const flatbuffers::resolver_function_t *_resolver = nullptr) const;
+  static flatbuffers::Offset<GeluOptions> Pack(flatbuffers::FlatBufferBuilder &_fbb, const GeluOptionsT* _o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
+};
+
+struct GeluOptionsBuilder {
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_approximate(bool approximate) {
+    fbb_.AddElement<uint8_t>(GeluOptions::VT_APPROXIMATE, static_cast<uint8_t>(approximate), 0);
+  }
+  explicit GeluOptionsBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  GeluOptionsBuilder &operator=(const GeluOptionsBuilder &);
+  flatbuffers::Offset<GeluOptions> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<GeluOptions>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<GeluOptions> CreateGeluOptions(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    bool approximate = false) {
+  GeluOptionsBuilder builder_(_fbb);
+  builder_.add_approximate(approximate);
+  return builder_.Finish();
+}
+
+flatbuffers::Offset<GeluOptions> CreateGeluOptions(flatbuffers::FlatBufferBuilder &_fbb, const GeluOptionsT *_o, const flatbuffers::rehasher_function_t *_rehasher = nullptr);
 
 struct OperatorCodeT : public flatbuffers::NativeTable {
   typedef OperatorCode TableType;
@@ -10922,6 +11087,12 @@ struct Operator FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const tflite::RandomOptions *builtin_options_as_RandomOptions() const {
     return builtin_options_type() == tflite::BuiltinOptions_RandomOptions ? static_cast<const tflite::RandomOptions *>(builtin_options()) : nullptr;
   }
+  const tflite::BucketizeOptions *builtin_options_as_BucketizeOptions() const {
+    return builtin_options_type() == tflite::BuiltinOptions_BucketizeOptions ? static_cast<const tflite::BucketizeOptions *>(builtin_options()) : nullptr;
+  }
+  const tflite::GeluOptions *builtin_options_as_GeluOptions() const {
+    return builtin_options_type() == tflite::BuiltinOptions_GeluOptions ? static_cast<const tflite::GeluOptions *>(builtin_options()) : nullptr;
+  }
   const flatbuffers::Vector<uint8_t> *custom_options() const {
     return GetPointer<const flatbuffers::Vector<uint8_t> *>(VT_CUSTOM_OPTIONS);
   }
@@ -11412,6 +11583,14 @@ template<> inline const tflite::AssignVariableOptions *Operator::builtin_options
 
 template<> inline const tflite::RandomOptions *Operator::builtin_options_as<tflite::RandomOptions>() const {
   return builtin_options_as_RandomOptions();
+}
+
+template<> inline const tflite::BucketizeOptions *Operator::builtin_options_as<tflite::BucketizeOptions>() const {
+  return builtin_options_as_BucketizeOptions();
+}
+
+template<> inline const tflite::GeluOptions *Operator::builtin_options_as<tflite::GeluOptions>() const {
+  return builtin_options_as_GeluOptions();
 }
 
 struct OperatorBuilder {
@@ -15448,6 +15627,58 @@ inline flatbuffers::Offset<RandomOptions> CreateRandomOptions(flatbuffers::FlatB
       _seed2);
 }
 
+inline BucketizeOptionsT *BucketizeOptions::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
+  auto _o = new BucketizeOptionsT();
+  UnPackTo(_o, _resolver);
+  return _o;
+}
+
+inline void BucketizeOptions::UnPackTo(BucketizeOptionsT *_o, const flatbuffers::resolver_function_t *_resolver) const {
+  (void)_o;
+  (void)_resolver;
+  { auto _e = boundaries(); if (_e) { _o->boundaries.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->boundaries[_i] = _e->Get(_i); } } }
+}
+
+inline flatbuffers::Offset<BucketizeOptions> BucketizeOptions::Pack(flatbuffers::FlatBufferBuilder &_fbb, const BucketizeOptionsT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
+  return CreateBucketizeOptions(_fbb, _o, _rehasher);
+}
+
+inline flatbuffers::Offset<BucketizeOptions> CreateBucketizeOptions(flatbuffers::FlatBufferBuilder &_fbb, const BucketizeOptionsT *_o, const flatbuffers::rehasher_function_t *_rehasher) {
+  (void)_rehasher;
+  (void)_o;
+  struct _VectorArgs { flatbuffers::FlatBufferBuilder *__fbb; const BucketizeOptionsT* __o; const flatbuffers::rehasher_function_t *__rehasher; } _va = { &_fbb, _o, _rehasher}; (void)_va;
+  auto _boundaries = _o->boundaries.size() ? _fbb.CreateVector(_o->boundaries) : 0;
+  return tflite::CreateBucketizeOptions(
+      _fbb,
+      _boundaries);
+}
+
+inline GeluOptionsT *GeluOptions::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
+  auto _o = new GeluOptionsT();
+  UnPackTo(_o, _resolver);
+  return _o;
+}
+
+inline void GeluOptions::UnPackTo(GeluOptionsT *_o, const flatbuffers::resolver_function_t *_resolver) const {
+  (void)_o;
+  (void)_resolver;
+  { auto _e = approximate(); _o->approximate = _e; }
+}
+
+inline flatbuffers::Offset<GeluOptions> GeluOptions::Pack(flatbuffers::FlatBufferBuilder &_fbb, const GeluOptionsT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
+  return CreateGeluOptions(_fbb, _o, _rehasher);
+}
+
+inline flatbuffers::Offset<GeluOptions> CreateGeluOptions(flatbuffers::FlatBufferBuilder &_fbb, const GeluOptionsT *_o, const flatbuffers::rehasher_function_t *_rehasher) {
+  (void)_rehasher;
+  (void)_o;
+  struct _VectorArgs { flatbuffers::FlatBufferBuilder *__fbb; const GeluOptionsT* __o; const flatbuffers::rehasher_function_t *__rehasher; } _va = { &_fbb, _o, _rehasher}; (void)_va;
+  auto _approximate = _o->approximate;
+  return tflite::CreateGeluOptions(
+      _fbb,
+      _approximate);
+}
+
 inline OperatorCodeT *OperatorCode::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
   auto _o = new OperatorCodeT();
   UnPackTo(_o, _resolver);
@@ -16379,6 +16610,14 @@ inline bool VerifyBuiltinOptions(flatbuffers::Verifier &verifier, const void *ob
       auto ptr = reinterpret_cast<const tflite::RandomOptions *>(obj);
       return verifier.VerifyTable(ptr);
     }
+    case BuiltinOptions_BucketizeOptions: {
+      auto ptr = reinterpret_cast<const tflite::BucketizeOptions *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
+    case BuiltinOptions_GeluOptions: {
+      auto ptr = reinterpret_cast<const tflite::GeluOptions *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
     default: return true;
   }
 }
@@ -16853,6 +17092,14 @@ inline void *BuiltinOptionsUnion::UnPack(const void *obj, BuiltinOptions type, c
       auto ptr = reinterpret_cast<const tflite::RandomOptions *>(obj);
       return ptr->UnPack(resolver);
     }
+    case BuiltinOptions_BucketizeOptions: {
+      auto ptr = reinterpret_cast<const tflite::BucketizeOptions *>(obj);
+      return ptr->UnPack(resolver);
+    }
+    case BuiltinOptions_GeluOptions: {
+      auto ptr = reinterpret_cast<const tflite::GeluOptions *>(obj);
+      return ptr->UnPack(resolver);
+    }
     default: return nullptr;
   }
 }
@@ -17315,6 +17562,14 @@ inline flatbuffers::Offset<void> BuiltinOptionsUnion::Pack(flatbuffers::FlatBuff
       auto ptr = reinterpret_cast<const tflite::RandomOptionsT *>(value);
       return CreateRandomOptions(_fbb, ptr, _rehasher).Union();
     }
+    case BuiltinOptions_BucketizeOptions: {
+      auto ptr = reinterpret_cast<const tflite::BucketizeOptionsT *>(value);
+      return CreateBucketizeOptions(_fbb, ptr, _rehasher).Union();
+    }
+    case BuiltinOptions_GeluOptions: {
+      auto ptr = reinterpret_cast<const tflite::GeluOptionsT *>(value);
+      return CreateGeluOptions(_fbb, ptr, _rehasher).Union();
+    }
     default: return 0;
   }
 }
@@ -17775,6 +18030,14 @@ inline BuiltinOptionsUnion::BuiltinOptionsUnion(const BuiltinOptionsUnion &u) FL
     }
     case BuiltinOptions_RandomOptions: {
       value = new tflite::RandomOptionsT(*reinterpret_cast<tflite::RandomOptionsT *>(u.value));
+      break;
+    }
+    case BuiltinOptions_BucketizeOptions: {
+      value = new tflite::BucketizeOptionsT(*reinterpret_cast<tflite::BucketizeOptionsT *>(u.value));
+      break;
+    }
+    case BuiltinOptions_GeluOptions: {
+      value = new tflite::GeluOptionsT(*reinterpret_cast<tflite::GeluOptionsT *>(u.value));
       break;
     }
     default:
@@ -18351,6 +18614,16 @@ inline void BuiltinOptionsUnion::Reset() {
     }
     case BuiltinOptions_RandomOptions: {
       auto ptr = reinterpret_cast<tflite::RandomOptionsT *>(value);
+      delete ptr;
+      break;
+    }
+    case BuiltinOptions_BucketizeOptions: {
+      auto ptr = reinterpret_cast<tflite::BucketizeOptionsT *>(value);
+      delete ptr;
+      break;
+    }
+    case BuiltinOptions_GeluOptions: {
+      auto ptr = reinterpret_cast<tflite::GeluOptionsT *>(value);
       delete ptr;
       break;
     }

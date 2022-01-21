@@ -45,7 +45,8 @@ std::unique_ptr<OperationPass<FuncOp>> CreateOptimizePass(
 
 // Creates an instance of the TensorFlow Lite dialect PrepareTF pass.
 std::unique_ptr<OperationPass<FuncOp>> CreatePrepareTFPass(
-    bool unfold_batch_matmul, bool allow_bf16_and_f16_type_legalization);
+    bool unfold_batch_matmul, bool allow_bf16_and_f16_type_legalization,
+    bool use_fake_quant_num_bits = false);
 
 // Creates an instance of the TensorFlow Lite dialect LowerStaticTensorList
 // pass.
@@ -54,7 +55,14 @@ std::unique_ptr<OperationPass<ModuleOp>> CreateLowerStaticTensorListPass(
     bool default_to_single_batch = false);
 
 // Creates an instance of the TensorFlow Lite dialect Quantize pass.
-// TODO(b/201596819): Improve long list of parameters in QuantizePass.
+// Use quant_specs.ops_blocklist and quant_specs.nodes_blocklist if possible
+// as they are now structure variables of QuantizationSpecs.
+std::unique_ptr<OperationPass<FuncOp>> CreateQuantizePass(
+    const QuantizationSpecs& quant_specs, const StringSet& ops_blocklist = {},
+    const StringSet& nodes_blocklist = {});
+
+// Overloading of CreateQuantizePass which takes only necessary flags to reduce
+// the binary size.
 std::unique_ptr<OperationPass<FuncOp>> CreateQuantizePass(
     bool verify_numeric = false, bool whole_model_verify = false,
     bool legacy_float_scale = false, const StringSet& ops_blocklist = {},
@@ -64,9 +72,9 @@ std::unique_ptr<OperationPass<FuncOp>> CreateQuantizePass(
 std::unique_ptr<OperationPass<FuncOp>> CreatePrepareQuantizePass(
     const QuantizationSpecs& quant_specs);
 
-// Creates an instance of the TensorFlow Lite dialect PrepareDynamicQuantize
-// pass.
-std::unique_ptr<OperationPass<FuncOp>> CreatePrepareDynamicQuantizePass(
+// Creates an instance of the TensorFlow Lite dialect
+// PrepareDynamicRangeQuantize pass.
+std::unique_ptr<OperationPass<FuncOp>> CreatePrepareDynamicRangeQuantizePass(
     const QuantizationSpecs& quant_specs);
 
 // Creates an instance of the TensorFlow Lite dialect PostQuantize pass.

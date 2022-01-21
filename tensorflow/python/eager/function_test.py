@@ -96,10 +96,7 @@ except ImportError:
 
 
 def total_function_cache(defined):
-  # pylint: disable=protected-access
-  return (set(defined._function_cache.primary)
-          | set(defined._function_cache.arg_relaxed))
-  # pylint: enable=protected-access
+  return defined._list_all_concrete_functions()  # pylint: disable=protected-access
 
 
 def _example_indexed_slices_with_dense_shape():
@@ -115,7 +112,7 @@ def _example_indexed_slices_without_dense_shape():
 
 def _spec_for_value(value):
   """Returns the (nested) TypeSpec for a value."""
-  if nest.is_sequence(value):
+  if nest.is_nested(value):
     return nest.map_structure(_spec_for_value, value)
   elif isinstance(value, (ops.Tensor, composite_tensor.CompositeTensor)):
     return type_spec.type_spec_from_value(value)
@@ -282,8 +279,8 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
       z = array_ops.zeros(0)
       v = def_function.function(
           experimental_implements='func')(lambda x, y: x + y + z)
-      a = array_ops.ones((1.0,))
-      b = array_ops.ones((1.0,))
+      a = array_ops.ones((1,))
+      b = array_ops.ones((1,))
       with self.assertRaisesRegex(AssertionError,
                                   'variables are always captured'):
         v(a, b)
@@ -666,7 +663,9 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
     def f(_):
       return 1.0
 
-    with self.assertRaisesRegex(ValueError, r'got.*set'):
+    with self.assertRaisesRegex(
+        TypeError,
+        r'could not be represented through the generic tracing'):
       f(set([]))
 
   def testFuncName(self):
@@ -1943,14 +1942,15 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
         return 42
 
     def func(foo):
-      del foo
-      return
+      return constant_op.constant([id(foo)])
 
     defined = function.defun(func)
-    defined(Foo())
+    foo_1 = Foo()
+    defined(foo_1)
     self.assertLen(total_function_cache(defined), 1)
 
-    defined(Foo())
+    foo_2 = Foo()
+    defined(foo_2)
     self.assertLen(total_function_cache(defined), 2)
 
   def testCacheTensorDtypeCollision(self):
@@ -3176,10 +3176,7 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
     self.assertLen(total_function_cache(defined), 1)
 
   def _total_function_cache_def_func(self, defined):
-    # pylint: disable=protected-access
-    return (set(defined._stateful_fn._function_cache.primary)
-            | set(defined._stateful_fn._function_cache.arg_relaxed))
-    # pylint: enable=protected-access
+    return defined._list_all_concrete_functions()  # pylint: disable=protected-access
 
   def testVariableRetracingOnDtypeChanges(self):
 
