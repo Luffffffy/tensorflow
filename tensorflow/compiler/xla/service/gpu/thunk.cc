@@ -18,17 +18,14 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-StatusOr<GlobalDeviceId> Thunk::ExecuteParams::GetGlobalDeviceId() const {
-  int64_t local_device_ordinal = stream->parent()->device_ordinal();
-  if (gpu_global_device_ids) {
-    TF_RET_CHECK(0 <= local_device_ordinal &&
-                 local_device_ordinal < gpu_global_device_ids->size());
-    return (*gpu_global_device_ids)[local_device_ordinal];
-  } else {
-    // No local -> global mapping was provided; assume the identity mapping.
-    return GlobalDeviceId(local_device_ordinal);
-  }
-}
+Thunk::ExecuteParams::ExecuteParams(
+    const ServiceExecutableRunOptions& run_options,
+    const BufferAllocations& buffer_allocations, se::Stream* stream,
+    se::Stream* async_comms_stream)
+    : buffer_allocations(&buffer_allocations),
+      stream(stream),
+      async_comms_stream(async_comms_stream),
+      nccl_params(run_options, stream) {}
 
 /*static*/ absl::string_view Thunk::KindToString(Thunk::Kind kind) {
   switch (kind) {

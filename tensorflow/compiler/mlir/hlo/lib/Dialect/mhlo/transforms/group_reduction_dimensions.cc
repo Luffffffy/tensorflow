@@ -17,10 +17,17 @@ limitations under the License.
 #include <utility>
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Sequence.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Casting.h"
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/PassDetail.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/passes.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -28,125 +35,280 @@ namespace mlir {
 namespace mhlo {
 namespace {
 
+LogicalResult tryLowerToCollapseShape(
+    ReduceOp op, RankedTensorType argTy, Value arg,
+    SmallVector<int64_t>& orderedReductionDims, PatternRewriter& rewriter) {
+  // This only works for trivial reductions where all declared reduction
+  // dimensiosn are of extent 1.
+  if (!llvm::all_of(orderedReductionDims,
+                    [argTy](int64_t i) { return argTy.getDimSize(i) == 1; })) {
+    return failure();
+  }
+
+  int64_t argRank = argTy.getRank();
+  int64_t num_reduction_dims = orderedReductionDims.size();
+
+  int64_t j = 0;
+  auto isDeclaredAsReductionDim = [&](int64_t i) {
+    if (j < num_reduction_dims && orderedReductionDims[j] == i) {
+      j++;
+      return true;
+    }
+    return false;
+  };
+
+  // Build reassociation indices.
+  SmallVector<ReassociationIndices, 4> reassociation;
+  int64_t iBegin = 0;
+  int64_t i = 0;
+  while (i < argRank && isDeclaredAsReductionDim(i)) i++;
+  while (i < argRank) {
+    i++;
+    while (i < argRank && isDeclaredAsReductionDim(i)) i++;
+    reassociation.push_back(llvm::to_vector(llvm::seq(iBegin, i)));
+    iBegin = i;
+  }
+
+  // Lower reduction op to collapse shape op.
+  rewriter.replaceOpWithNewOp<tensor::CollapseShapeOp>(op, arg, reassociation);
+  return success();
+}
+
 enum class DimensionKind {
   kParallel,
   kReduction,
+  kDegenerate,
 };
 
 struct DimensionGroup {
   DimensionKind kind;
   int64_t begin;
   int64_t end;
+  int64_t size() { return end - begin; }
 };
 
 // Groups consecutive dimensions of a reduction argument by their kind, i.e. if
-// they are reduction or parallel dimensions.
-void GroupDimensions(int64_t arg_rank, DenseIntElementsAttr reduction_dims,
+// they are reduction or parallel dimensions. Dimensions of size 1 can be
+// considered as any kind.
+void groupDimensions(RankedTensorType argTy,
+                     SmallVector<int64_t> orderedReductionDims,
                      SmallVector<DimensionGroup>& groups) {
-  auto ordered_reduction_dims = llvm::to_vector<4>(llvm::map_range(
-      reduction_dims, [](auto d) { return d.getLimitedValue(); }));
-  std::sort(ordered_reduction_dims.begin(), ordered_reduction_dims.end());
-  int j = 0;
-  for (int64_t i = 0; i < arg_rank; ++i) {
-    DimensionKind kind;
-    if (j < ordered_reduction_dims.size() && i == ordered_reduction_dims[j]) {
-      kind = DimensionKind::kReduction;
+  int64_t argRank = argTy.getRank();
+  int64_t numReductionDims = orderedReductionDims.size();
+  int64_t j = 0;
+  for (int64_t i = 0; i < argRank; ++i) {
+    // Check if the i-th dimension is one of the declared reduction dimensions.
+    bool isDeclaredAsReductionDim = false;
+    if (j < numReductionDims && i == orderedReductionDims[j]) {
+      isDeclaredAsReductionDim = true;
       j++;
-    } else {
-      kind = DimensionKind::kParallel;
     }
-    if (groups.empty() || groups.back().kind != kind)
+
+    // Use the declared dimension kind unless the dimension is of extent 1, in
+    // which case we can consider it either kind. We exploit this to form
+    // maximal dimension groups.
+    DimensionKind kind = isDeclaredAsReductionDim ? DimensionKind::kReduction
+                                                  : DimensionKind::kParallel;
+    if (argTy.getDimSize(i) == 1) kind = DimensionKind::kDegenerate;
+
+    // Start a new dimension group if the dimenion kind conflicts with the
+    // trailing kind.
+    if (groups.empty() || (groups.back().kind != kind &&
+                           groups.back().kind != DimensionKind::kDegenerate &&
+                           kind != DimensionKind::kDegenerate)) {
       groups.push_back({kind, i, i});
+    }
+
+    // Include dimension in trailing group and concretize dimension kind if
+    // necessary.
+    if (groups.back().kind == DimensionKind::kDegenerate)
+      groups.back().kind = kind;
     groups.back().end++;
   }
 }
 
+LogicalResult tryLowerTo1DOr2DReduction(
+    ReduceOp op, RankedTensorType argTy, Value arg,
+    SmallVector<int64_t>& orderedReductionDims, bool preferColumnsReductions,
+    PatternRewriter& rewriter) {
+  // Group the argument dimensions by their kind.
+  SmallVector<DimensionGroup> dimGroups;
+  groupDimensions(argTy, orderedReductionDims, dimGroups);
+
+  // Do not (re-)apply if the dimensions are already fully collapsed.
+  if (dimGroups.size() <= 2 &&
+      llvm::all_of(dimGroups, [](auto g) { return g.size() == 1; })) {
+    return failure();
+  }
+
+  // Determine whether or not a dynamic reshape is needed for the final result.
+  int64_t numDynParallelDims = 0;
+  for (auto group : dimGroups) {
+    if (group.kind != DimensionKind::kParallel) continue;
+    for (int64_t i = group.begin; i < group.end; i++) {
+      if (argTy.isDynamicDim(i)) numDynParallelDims++;
+    }
+  }
+  bool requiresDynamicReshape = numDynParallelDims > 1;
+
+  // Reify the result shape early so that the pattern can fail without altering
+  // the IR.
+  Optional<Value> resultShape;
+  if (requiresDynamicReshape) {
+    llvm::SmallVector<Value, 1> reifiedShapes;
+    if (failed(llvm::cast<InferShapedTypeOpInterface>(op.getOperation())
+                   .reifyReturnTypeShapes(rewriter, op->getOperands(),
+                                          reifiedShapes))) {
+      return failure();
+    }
+    assert(reifiedShapes.size() == 1 && "expect exactly one shape");
+    resultShape = reifiedShapes.front();
+  }
+
+  // Collapse dimension groups so that all adjacent dimensions of the
+  // intermediate result are of a different kind.
+  Value intermResult = arg;
+  auto loc = op.getLoc();
+  bool requiresCollapse =
+      llvm::any_of(dimGroups, [&](auto g) { return g.size() > 1; });
+  if (requiresCollapse) {
+    auto reassociation =
+        llvm::to_vector(llvm::map_range(dimGroups, [&](auto g) {
+          return llvm::to_vector<2>(llvm::seq<int64_t>(g.begin, g.end));
+        }));
+    intermResult = rewriter.create<tensor::CollapseShapeOp>(loc, intermResult,
+                                                            reassociation);
+  }
+
+  // If required, transpose the intermediate result so that dimensions kinds
+  // form two partitions, which can be collapsed to a 2D intermediate result.
+  bool requiresTranspose = dimGroups.size() > 2;
+  if (requiresTranspose) {
+    // Materialize transpose.
+    DimensionKind leadingDimKind = preferColumnsReductions
+                                       ? DimensionKind::kReduction
+                                       : DimensionKind::kParallel;
+    DimensionKind trailingDimKind = preferColumnsReductions
+                                        ? DimensionKind::kParallel
+                                        : DimensionKind::kReduction;
+    SmallVector<int64_t> perm;
+    for (int i = 0; i < dimGroups.size(); i++) {
+      if (dimGroups[i].kind == leadingDimKind) perm.push_back(i);
+    }
+    int64_t numLeadingDims = perm.size();
+    for (int i = 0; i < dimGroups.size(); i++) {
+      if (dimGroups[i].kind == trailingDimKind) perm.push_back(i);
+    }
+    auto permAttr = rewriter.getI64TensorAttr(perm);
+    intermResult = rewriter.create<TransposeOp>(loc, intermResult, permAttr)
+                       ->getResults()
+                       .front();
+
+    // Collapse intermediate result rank 2.
+    SmallVector<ReassociationIndices, 2> reassociation = {
+        llvm::to_vector<2>(llvm::seq<int64_t>(0, numLeadingDims)),
+        llvm::to_vector<2>(llvm::seq<int64_t>(numLeadingDims, perm.size()))};
+    intermResult = rewriter.create<tensor::CollapseShapeOp>(loc, intermResult,
+                                                            reassociation);
+  }
+
+  // Materialize inner 1D or 2D reduction.
+  bool leadingReduction =
+      requiresTranspose ? preferColumnsReductions
+                        : dimGroups.front().kind == DimensionKind::kReduction;
+  int64_t reductionDim = leadingReduction ? 0 : 1;
+  auto reductionDimAttr = rewriter.getI64VectorAttr({reductionDim});
+  Value initVal = op.init_values().front();
+  auto reductionOp =
+      rewriter.create<ReduceOp>(loc, intermResult, initVal, reductionDimAttr);
+  rewriter.inlineRegionBefore(op.body(), reductionOp.body(),
+                              reductionOp.body().begin());
+  intermResult = reductionOp->getResults().front();
+
+  // Restore the expected shape by dynamic reshape, if required.
+  auto resultTy = op->getResultTypes().front().cast<RankedTensorType>();
+  if (requiresDynamicReshape) {
+    assert(resultShape && "expect to have reified the result shape");
+    intermResult = rewriter.create<DynamicReshapeOp>(
+        loc, resultTy, intermResult, *resultShape);
+  }
+
+  // Othwerise, restore the expected shape by shape expansion, if required.
+  int64_t resultRank = resultTy.getRank();
+  int64_t intermResultRank =
+      intermResult.getType().cast<RankedTensorType>().getRank();
+  bool requiresExpand =
+      !requiresDynamicReshape && resultRank != intermResultRank;
+  if (requiresExpand) {
+    assert(intermResultRank <= 1 &&
+           "expect intermediate result to be of rank 0 or 1 before expansion");
+    SmallVector<ReassociationIndices, 1> reassociation;
+    bool isScalarExpansion = intermResultRank == 0;
+    if (!isScalarExpansion)
+      reassociation = {llvm::to_vector(llvm::seq<int64_t>(0, resultRank))};
+    intermResult = rewriter.create<tensor::ExpandShapeOp>(
+        loc, resultTy, intermResult, reassociation);
+  }
+
+  rewriter.replaceOp(op, intermResult);
+  return success();
+}
+
 struct GroupReductionDimensionsPattern : public OpRewritePattern<ReduceOp> {
-  using OpRewritePattern<ReduceOp>::OpRewritePattern;
+  GroupReductionDimensionsPattern(MLIRContext* ctx,
+                                  bool preferColumnsReductions)
+      : OpRewritePattern<ReduceOp>(ctx, /*benefit=*/1),
+        preferColumnsReductions(preferColumnsReductions) {}
+
   LogicalResult matchAndRewrite(ReduceOp op,
                                 PatternRewriter& rewriter) const override {
     // Only apply to reduction of a unique argument.
-    if (op.inputs().size() != 1 || op.init_values().size() != 1)
+    if (op.operands().size() != 1 || op.init_values().size() != 1)
       return failure();
-    Value arg = op.inputs().front();
-    auto arg_ty = arg.getType().cast<RankedTensorType>();
-    int64_t arg_rank = arg_ty.getRank();
+    Value arg = op.operands().front();
+    auto argTy = arg.getType().cast<RankedTensorType>();
 
-    // Group the argument dimensions by their kind.
-    SmallVector<DimensionGroup> dim_groups;
-    GroupDimensions(arg_rank, op.dimensions(), dim_groups);
-
-    // Only apply this optimization if we can simplify the reduction operation
-    // to a 1D or 2D reduction.
-    if (dim_groups.size() > 2) return failure();
-
-    // Do not (re-)apply if the dimensions are already fully collapsed.
-    if (llvm::all_of(dim_groups, [](auto g) { return g.begin + 1 == g.end; })) {
-      return failure();
-    }
-
-    // Accept at most one dynamic parallel dimension. For more dynamic
-    // dimensions, we need a dynamic version of the `expand_shape` op (or use
-    // `dynamic_reshape`) to restore the desired output shape.
-    // TODO(frgossen): Implement result expansion for cases with more than one
-    // dynamic dimension.
-    int64_t num_dyn_parallel_dims = 0;
-    for (auto group : dim_groups) {
-      if (group.kind == DimensionKind::kReduction) continue;
-      for (int64_t i = group.begin; i < group.end; i++) {
-        if (arg_ty.isDynamicDim(i)) num_dyn_parallel_dims++;
-      }
-    }
-    if (num_dyn_parallel_dims > 1) return failure();
-
-    // Collapse argument to a 1D tensor for full a reduction and to a 2D tensor
-    // for a partial reduction.
-    SmallVector<ReassociationIndices, 2> collapsing_reassociation =
-        llvm::to_vector<2>(llvm::map_range(dim_groups, [](auto g) {
-          return llvm::to_vector<2>(llvm::seq<int64_t>(g.begin, g.end));
+    // Sort reduction dimensions, which is not an invariant of the op.
+    SmallVector<int64_t> orderedReductionDims =
+        llvm::to_vector<4>(llvm::map_range(op.dimensions(), [](auto d) {
+          return static_cast<int64_t>(d.getLimitedValue());
         }));
-    auto loc = op.getLoc();
-    auto collapsed_arg = rewriter.create<tensor::CollapseShapeOp>(
-        loc, arg, collapsing_reassociation);
+    std::sort(orderedReductionDims.begin(), orderedReductionDims.end());
 
-    // Materialize collapsed reduction op.
-    int64_t collapsed_reduction_dim =
-        dim_groups.front().kind == DimensionKind::kReduction ? 0 : 1;
-    auto collapsed_reduction_dim_attr = DenseIntElementsAttr::get(
-        RankedTensorType::get({1}, rewriter.getI64Type()),
-        {collapsed_reduction_dim});
-    auto collapsed_result = rewriter.create<ReduceOp>(
-        loc, collapsed_arg->getResults().front(), op.init_values().front(),
-        collapsed_reduction_dim_attr);
-    rewriter.inlineRegionBefore(op.body(), collapsed_result.body(),
-                                collapsed_result.body().begin());
-
-    // For reductions to ranks <= 1, the collapsed reduction yields the exact
-    // same result as the original one.
-    auto result_ty = op->getResultTypes().front().cast<RankedTensorType>();
-    int64_t result_rank = result_ty.getRank();
-    if (result_rank <= 1) {
-      rewriter.replaceOp(op, collapsed_result.getResults());
+    // If all reduction dimensions are known to be of extent 1 then we can
+    // express the reduction through an equivalent collapsing op.
+    if (succeeded(tryLowerToCollapseShape(op, argTy, arg, orderedReductionDims,
+                                          rewriter))) {
       return success();
     }
 
-    // Othwerwise, we have to restore the desired shape by shape expansion.
-    SmallVector<ReassociationIndices, 1> expanding_reassociation = {
-        llvm::to_vector(llvm::seq<int64_t>(0, result_rank))};
-    auto expanded_result = rewriter.create<tensor::ExpandShapeOp>(
-        loc, result_ty, collapsed_result.getResults().front(),
-        expanding_reassociation);
-    rewriter.replaceOp(op, expanded_result->getResults());
-    return success();
+    // Otherwise, try lowering the reduction to an equivalent 1D or 2D
+    // reduction, and insert transposes if needed.
+    if (succeeded(
+            tryLowerTo1DOr2DReduction(op, argTy, arg, orderedReductionDims,
+                                      preferColumnsReductions, rewriter))) {
+      return success();
+    }
+
+    return failure();
   }
+
+  bool preferColumnsReductions;
 };
 
 struct GroupReductionDimensionsPass
     : public GroupReductionDimensionsPassBase<GroupReductionDimensionsPass> {
+  explicit GroupReductionDimensionsPass(bool preferColumnsReductions)
+      : GroupReductionDimensionsPassBase<
+            GroupReductionDimensionsPass>::GroupReductionDimensionsPassBase() {
+    prefer_columns_reductions_ = preferColumnsReductions;
+  }
+
   void runOnOperation() override {
     MLIRContext* ctx = &getContext();
     RewritePatternSet patterns(ctx);
-    mhlo::populateGroupReductionDimensionsPatterns(ctx, &patterns);
+    populateGroupReductionDimensionsPatterns(ctx, &patterns,
+                                             prefer_columns_reductions_);
     if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                             std::move(patterns)))) {
       return signalPassFailure();
@@ -156,13 +318,17 @@ struct GroupReductionDimensionsPass
 
 }  // namespace
 
-void populateGroupReductionDimensionsPatterns(
-    MLIRContext* context, OwningRewritePatternList* patterns) {
-  patterns->insert<GroupReductionDimensionsPattern>(context);
+void populateGroupReductionDimensionsPatterns(MLIRContext* context,
+                                              RewritePatternSet* patterns,
+                                              bool preferColumnsReductions) {
+  patterns->add<GroupReductionDimensionsPattern>(context,
+                                                 preferColumnsReductions);
 }
 
-std::unique_ptr<OperationPass<FuncOp>> createGroupReductionDimensionsPass() {
-  return std::make_unique<GroupReductionDimensionsPass>();
+std::unique_ptr<OperationPass<func::FuncOp>> createGroupReductionDimensionsPass(
+    bool preferColumnsReductions) {
+  return std::make_unique<GroupReductionDimensionsPass>(
+      preferColumnsReductions);
 }
 
 }  // namespace mhlo

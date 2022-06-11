@@ -13,9 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "tensorflow/compiler/xla/client/client_library.h"
 #include "tensorflow/compiler/xla/client/local_client.h"
 #include "tensorflow/compiler/xla/literal.h"
@@ -62,6 +62,7 @@ class BufferDonationTest : public HloTestBase {
                    absl::Span<bool const> donate_arguments,
                    absl::Span<bool const> expected_runtime_aliasing,
                    const Literal& expected, std::string expected_failure = "") {
+    UpdateEntryComputationLayout(hlo_module.get());
     // Create a copy of the output shape because the HLO module is std::moved
     // into the compiler and may be deallocated.
     const Shape output_shape = hlo_module->result_shape();

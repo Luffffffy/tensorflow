@@ -43,6 +43,9 @@ namespace {
 
 bool IsCallerInstruction(HloInstruction* hlo) {
   switch (hlo->opcode()) {
+    case HloOpcode::kAsyncStart:
+    case HloOpcode::kAsyncUpdate:
+    case HloOpcode::kAsyncDone:
     case HloOpcode::kCall:
     case HloOpcode::kConditional:
     case HloOpcode::kWhile:
@@ -69,7 +72,7 @@ Status CheckOperandCount(const HloInstruction* hlo, int expected) {
                          expected, HloOpcodeString(hlo->opcode()),
                          hlo->ToString());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status CheckParameterCount(const HloInstruction* calling_instruction,
@@ -80,7 +83,7 @@ Status CheckParameterCount(const HloInstruction* calling_instruction,
         computation->name(), calling_instruction->name(), expected,
         computation->num_parameters());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 int64_t GetSubgroupSize(HloCollectiveInstruction* hlo,
@@ -121,11 +124,11 @@ Status ShapeVerifier::Preprocess(HloInstruction* hlo) {
         "Called computations specified for non-caller instruction  %s",
         hlo->ToString());
   }
-  absl::optional<int> arity = HloOpcodeArity(hlo->opcode());
+  std::optional<int> arity = HloOpcodeArity(hlo->opcode());
   if (arity) {
     TF_RETURN_IF_ERROR(CheckOperandCount(hlo, *arity));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleElementwiseUnary(HloInstruction* hlo) {
@@ -142,10 +145,6 @@ Status ShapeVerifier::HandleClamp(HloInstruction* clamp) {
 
 Status ShapeVerifier::HandleSelect(HloInstruction* select) {
   return CheckTernaryShape(select);
-}
-
-Status ShapeVerifier::HandleTupleSelect(HloInstruction* tuple_select) {
-  return CheckTernaryShape(tuple_select);
 }
 
 Status ShapeVerifier::HandleConcatenate(HloInstruction* concatenate) {
@@ -308,7 +307,7 @@ static Status CheckReplicaGroups(HloInstruction* hlo,
         << "Replica groups must be specified in flattened-id mode";
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 static Status CheckCommonAllGatherInvariants(HloInstruction* hlo,
@@ -351,7 +350,7 @@ static Status CheckCommonAllGatherInvariants(HloInstruction* hlo,
       << "shard_count = " << shard_count
       << ", subgroup_size = " << subgroup_size << ", " << hlo->ToString();
   *computed_shard_count = shard_count;
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleAllGather(HloInstruction* hlo) {
@@ -464,17 +463,11 @@ Status ShapeVerifier::HandleAllToAll(HloInstruction* hlo) {
   auto* all_to_all = Cast<HloAllToAllInstruction>(hlo);
   TF_ASSIGN_OR_RETURN(CollectiveOpGroupMode group_mode,
                       GetCollectiveOpGroupMode(
-                          all_to_all->channel_id().has_value(), absl::nullopt));
+                          all_to_all->channel_id().has_value(), std::nullopt));
 
   TF_RETURN_IF_ERROR(CheckReplicaGroups(hlo, group_mode));
 
   TF_RET_CHECK(all_to_all != nullptr);
-  if (all_to_all->split_dimension()) {
-    if (hlo->replica_groups().empty()) {
-      return InternalError(
-          "An array all-to-all must have an explicit replica_groups config");
-    }
-  }
 
   // The size of each replica group must be the same (checked in
   // CheckReplicaGroups). This is the split count of the operation). In case the
@@ -544,12 +537,12 @@ Status CheckBufferOffset(const Shape& buffer_shape,
           "elements as the buffer's rank.");
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status CheckInplaceCollectivePermute(HloInstruction* collective_permute) {
   if (collective_permute->operand_count() == 1) {
-    return Status::OK();
+    return OkStatus();
   }
   if (collective_permute->operand_count() != 4) {
     return InternalError("Unexpected number of operands: %d.",
@@ -606,7 +599,7 @@ Status CheckInplaceCollectivePermute(HloInstruction* collective_permute) {
   } else {
     return InternalError("Unmatching input buffers and output buffers.");
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status CheckDuplicatedSourceOrTarget(HloInstruction* hlo,
@@ -685,7 +678,7 @@ Status CheckDuplicatedSourceOrTarget(HloInstruction* hlo,
       seen_target_to_sources[p.second].push_back(p.first);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -694,7 +687,7 @@ Status ShapeVerifier::HandleCollectivePermute(HloInstruction* hlo) {
   TF_ASSIGN_OR_RETURN(
       CollectiveOpGroupMode group_mode,
       GetCollectiveOpGroupMode(hlo->channel_id().has_value(),
-                               /*use_global_device_ids=*/absl::nullopt));
+                               /*use_global_device_ids=*/std::nullopt));
   TF_RETURN_IF_ERROR(CheckInplaceCollectivePermute(hlo));
   TF_RETURN_IF_ERROR(CheckDuplicatedSourceOrTarget(hlo, group_mode));
   std::vector<const Shape*> operand_shapes;
@@ -709,7 +702,7 @@ Status ShapeVerifier::HandleCollectivePermuteStart(HloInstruction* hlo) {
   TF_ASSIGN_OR_RETURN(
       CollectiveOpGroupMode group_mode,
       GetCollectiveOpGroupMode(hlo->channel_id().has_value(),
-                               /*use_global_device_ids=*/absl::nullopt));
+                               /*use_global_device_ids=*/std::nullopt));
   TF_RETURN_IF_ERROR(CheckInplaceCollectivePermute(hlo));
   TF_RETURN_IF_ERROR(CheckDuplicatedSourceOrTarget(hlo, group_mode));
   std::vector<const Shape*> operand_shapes;
@@ -741,7 +734,7 @@ Status ShapeVerifier::CheckIsTokenOperand(const HloInstruction* instruction,
         "%s:\n%s",
         operand_no, StringifyShape(token->shape()), instruction->ToString());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::CheckOperandAndParameter(
@@ -755,7 +748,7 @@ Status ShapeVerifier::CheckOperandAndParameter(
                          operand->ToString(), parameter->ToString(),
                          instruction->ToString());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleInfeed(HloInstruction* instruction) {
@@ -840,12 +833,12 @@ Status ShapeVerifier::HandleRng(HloInstruction* instruction) {
           RandomDistribution_Name(instruction->random_distribution()));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleRngBitGenerator(HloInstruction* hlo) {
   if (!hlo->shape().IsTuple()) {
-    return Status::OK();
+    return OkStatus();
   }
   if (hlo->shape().IsTuple() && hlo->shape().tuple_shapes_size() != 2) {
     return InternalError(
@@ -860,7 +853,7 @@ Status ShapeVerifier::HandleRngBitGenerator(HloInstruction* hlo) {
         hlo->operand(0)->shape().ToString(),
         hlo->shape().tuple_shapes(0).ToString());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleRngGetAndUpdateState(HloInstruction* instruction) {
@@ -873,7 +866,7 @@ Status ShapeVerifier::HandleRngGetAndUpdateState(HloInstruction* instruction) {
         StringifyShape(expected_shape), StringifyShape(result_shape));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleReverse(HloInstruction* reverse) {
@@ -971,7 +964,7 @@ Status ShapeVerifier::HandleIota(HloInstruction* hlo) {
         PrimitiveType_Name(primitive_type));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleGetTupleElement(HloInstruction* get_tuple_element) {
@@ -995,7 +988,7 @@ Status SameElementTypesForOperandsAndToApplyParameters(
           i, instruction.ToString().c_str());
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace
 
@@ -1016,7 +1009,7 @@ Status ShapeVerifier::HandleReduce(HloInstruction* reduce) {
                              reduce->to_apply()->ComputeProgramShape())));
 
   return allow_mixed_precision_
-             ? Status::OK()
+             ? OkStatus()
              : SameElementTypesForOperandsAndToApplyParameters(
                    *reduce, reduce->operand_count());
 }
@@ -1033,7 +1026,7 @@ Status ShapeVerifier::HandleBitcast(HloInstruction* bitcast) {
         bitcast->shape().ToString(true),
         bitcast->operand(0)->shape().ToString(true));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleBroadcast(HloInstruction* broadcast) {
@@ -1052,7 +1045,7 @@ Status ShapeVerifier::HandleBroadcast(HloInstruction* broadcast) {
                   operand_shape.dimensions(operand_dimension)))
         << broadcast->ToString() << " operand shape " << operand_shape;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleDynamicReshape(HloInstruction* dynamic_reshape) {
@@ -1066,7 +1059,7 @@ Status ShapeVerifier::HandleDynamicReshape(HloInstruction* dynamic_reshape) {
   for (int64_t i = 1; i < dynamic_reshape->operand_count(); ++i) {
     TF_RET_CHECK(dynamic_reshape->operand(i)->shape().element_type() == S32);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleReshape(HloInstruction* reshape) {
@@ -1075,7 +1068,7 @@ Status ShapeVerifier::HandleReshape(HloInstruction* reshape) {
   TF_RET_CHECK(SameElementType(reshape->shape(), operand_shape));
   TF_RET_CHECK(ShapeUtil::ElementsIn(reshape->shape()) ==
                ShapeUtil::ElementsIn(operand_shape));
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleTranspose(HloInstruction* transpose) {
@@ -1085,7 +1078,7 @@ Status ShapeVerifier::HandleTranspose(HloInstruction* transpose) {
 }
 
 Status ShapeVerifier::HandleParameter(HloInstruction* hlo) {
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleFusion(HloInstruction* fusion) {
@@ -1119,7 +1112,7 @@ Status ShapeVerifier::HandleFusion(HloInstruction* fusion) {
           param_no, fusion->ToString().c_str());
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleCall(HloInstruction* call) {
@@ -1175,7 +1168,7 @@ Status ShapeVerifier::HandleCustomCall(HloInstruction* instruction) {
           << " vs " << output_subshape.ToString();
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandleSlice(HloInstruction* slice) {
@@ -1227,7 +1220,7 @@ Status ShapeVerifier::HandleMap(HloInstruction* map) {
           operand_shapes, map->to_apply()->ComputeProgramShape(), map_dims)));
 
   return allow_mixed_precision_
-             ? Status::OK()
+             ? OkStatus()
              : SameElementTypesForOperandsAndToApplyParameters(
                    *map, map->operand_count());
 }
@@ -1245,7 +1238,7 @@ Status ShapeVerifier::HandleReduceWindow(HloInstruction* reduce_window) {
                          reduce_window->to_apply()->ComputeProgramShape())));
 
   return allow_mixed_precision_
-             ? Status::OK()
+             ? OkStatus()
              : SameElementTypesForOperandsAndToApplyParameters(
                    *reduce_window, reduce_window->operand_count());
 }
@@ -1314,13 +1307,110 @@ Status ShapeVerifier::HandleConditional(HloInstruction* conditional) {
         conditional,
         conditional->branch_computation(j)->root_instruction()->shape()));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::HandlePad(HloInstruction* pad) {
   return CheckShape(pad, ShapeInference::InferPadShape(pad->operand(0)->shape(),
                                                        pad->operand(1)->shape(),
                                                        pad->padding_config()));
+}
+
+namespace {
+Status CheckAsyncOpOperand(const HloInstruction* async_op) {
+  const HloInstruction* operand = async_op->operand(0);
+  if (operand->opcode() != HloOpcode::kAsyncStart &&
+      operand->opcode() != HloOpcode::kAsyncUpdate) {
+    return InternalError(
+        "async-update expects operand to be async-update or async-done, found "
+        "%s.",
+        HloOpcodeString(operand->opcode()));
+  }
+  if (*async_op->async_wrapped_computation() !=
+      *operand->async_wrapped_computation()) {
+    return InternalError(
+        "The %s expects its wrapped async computation to be identical to its "
+        "operand's wrapped async computation (%s vs %s).",
+        HloOpcodeString(async_op->opcode()),
+        async_op->async_wrapped_instruction()->ToString(),
+        operand->async_wrapped_instruction()->ToString());
+  }
+  return OkStatus();
+}
+
+Status CheckAsyncOpComputationShapes(const HloInstruction* async_op,
+                                     const Shape& async_shape) {
+  if (!async_shape.IsTuple() || async_shape.tuple_shapes_size() < 2) {
+    return InternalError(
+        "The %s expects the async shape to be a tuple of at least two "
+        "elements, found %s.",
+        HloOpcodeString(async_op->opcode()), async_shape.ToString());
+  }
+  ProgramShape computation_shape =
+      async_op->async_wrapped_computation()->ComputeProgramShape();
+  Shape param_shape = ShapeUtil::MakeTupleShape(computation_shape.parameters());
+  if (async_shape.tuple_shapes(0) != param_shape) {
+    return InternalError(
+        "The %s expects the async shape at index {0} to match async "
+        "computation parameter shape (%s vs %s).",
+        HloOpcodeString(async_op->opcode()),
+        async_shape.tuple_shapes(0).ToString(/*print_layout=*/true),
+        param_shape.ToString(/*print_layout=*/true));
+  }
+  if (async_shape.tuple_shapes(1) != computation_shape.result()) {
+    return InternalError(
+        "The %s expects the async shape at index {1} to match the async "
+        "computation root shape (%s vs %s).",
+        HloOpcodeString(async_op->opcode()),
+        async_shape.tuple_shapes(1).ToString(/*print_layout=*/true),
+        computation_shape.result().ToString(/*print_layout=*/true));
+  }
+  return Status::OK();
+}
+}  // namespace
+
+Status ShapeVerifier::HandleAsyncStart(HloInstruction* async_start) {
+  TF_RETURN_IF_ERROR(
+      CheckAsyncOpComputationShapes(async_start, async_start->shape()));
+  const Shape& param_shape = async_start->shape().tuple_shapes(0);
+  for (int i = 0; i < async_start->operand_count(); ++i) {
+    if (param_shape.tuple_shapes(i) != async_start->operand(i)->shape()) {
+      return InternalError(
+          "The %s expects the shape of operand %d to match the async shape at "
+          "index {0} (%s vs %s).",
+          HloOpcodeString(async_start->opcode()), i,
+          async_start->operand(i)->shape().ToString(/*print_layout=*/true),
+          param_shape.tuple_shapes(i).ToString(/*print_layout=*/true));
+    }
+  }
+  return Status::OK();
+}
+
+Status ShapeVerifier::HandleAsyncUpdate(HloInstruction* async_update) {
+  if (async_update->operand(0)->shape() != async_update->shape()) {
+    return InternalError(
+        "The %s expects the shape of operand and output to match (%s vs %s).",
+        HloOpcodeString(async_update->opcode()),
+        async_update->operand(0)->shape().ToString(),
+        async_update->shape().ToString());
+  }
+  TF_RETURN_IF_ERROR(
+      CheckAsyncOpComputationShapes(async_update, async_update->shape()));
+  return CheckAsyncOpOperand(async_update);
+}
+
+Status ShapeVerifier::HandleAsyncDone(HloInstruction* async_done) {
+  TF_RETURN_IF_ERROR(CheckAsyncOpComputationShapes(
+      async_done, async_done->operand(0)->shape()));
+  const Shape& root_shape = async_done->operand(0)->shape().tuple_shapes(1);
+  if (root_shape != async_done->shape()) {
+    return InternalError(
+        "The %s expects the shape of output to match the async shape at index "
+        "{1} (%s vs %s).",
+        HloOpcodeString(async_done->opcode()), async_done->shape().ToString(),
+        root_shape.ToString());
+  }
+  return CheckAsyncOpOperand(async_done);
 }
 
 Status ShapeVerifier::HandleCopyStart(HloInstruction* copy_start) {
@@ -1426,12 +1516,16 @@ Status CheckMixedPrecisionOperands(const HloInstruction* instruction) {
     case HloOpcode::kAllReduce:
     case HloOpcode::kAllReduceStart:
     case HloOpcode::kAllReduceDone:
+    case HloOpcode::kAsyncDone:
+    case HloOpcode::kAsyncUpdate:
+    case HloOpcode::kAsyncStart:
     case HloOpcode::kCopyDone:
     case HloOpcode::kCopyStart:
     case HloOpcode::kCustomCall:
     case HloOpcode::kDomain:
     case HloOpcode::kFusion:
     case HloOpcode::kGetTupleElement:
+    case HloOpcode::kOptimizationBarrier:
     case HloOpcode::kInfeed:
     case HloOpcode::kOutfeed:
     case HloOpcode::kParameter:
@@ -1439,7 +1533,6 @@ Status CheckMixedPrecisionOperands(const HloInstruction* instruction) {
     case HloOpcode::kRecvDone:
     case HloOpcode::kReducePrecision:
     case HloOpcode::kReduceWindow:
-    case HloOpcode::kTupleSelect:
     case HloOpcode::kSend:
     case HloOpcode::kSendDone:
     case HloOpcode::kSort:
@@ -1453,7 +1546,7 @@ Status CheckMixedPrecisionOperands(const HloInstruction* instruction) {
             operand->shape(),
             [&](const Shape& subshape, const ShapeIndex& index) {
               if (!ShapeUtil::ElementIsFloating(subshape)) {
-                return Status::OK();
+                return OkStatus();
               }
               if (fp_type == PRIMITIVE_TYPE_INVALID) {
                 fp_type = subshape.element_type();
@@ -1463,12 +1556,12 @@ Status CheckMixedPrecisionOperands(const HloInstruction* instruction) {
                     "%s, but mixed precision is disallowed.",
                     instruction->ToString());
               }
-              return Status::OK();
+              return OkStatus();
             }));
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -1482,12 +1575,15 @@ Status ShapeVerifier::HandleGather(HloInstruction* gather) {
 }
 
 Status ShapeVerifier::HandleScatter(HloInstruction* scatter) {
-  return CheckShape(
-      scatter, ShapeInference::InferScatterShape(
-                   scatter->operand(0)->shape(), scatter->operand(1)->shape(),
-                   scatter->operand(2)->shape(),
-                   scatter->to_apply()->ComputeProgramShape(),
-                   scatter->scatter_dimension_numbers()));
+  absl::InlinedVector<const Shape*, 3> arg_shapes;
+  arg_shapes.reserve(scatter->operand_count());
+  for (const HloInstruction* operand : scatter->operands()) {
+    arg_shapes.push_back(&operand->shape());
+  }
+  return CheckShape(scatter,
+                    ShapeInference::InferScatterShape(
+                        arg_shapes, scatter->to_apply()->ComputeProgramShape(),
+                        scatter->scatter_dimension_numbers()));
 }
 
 Status ShapeVerifier::HandleAfterAll(HloInstruction* token) {
@@ -1535,7 +1631,7 @@ Status ShapeVerifier::CheckShape(const HloInstruction* instruction,
       // The opcodes below can't have implicit layout conversions, nor can they
       // implicitly transform f32 -> bf16.  Fundamentally these are either
       // reinterpreting existing data (e.g. kBitcast) or shuffling data around
-      // without modifying it (e.g. kGetTupleElement, kTupleSelect).
+      // without modifying it (e.g. kGetTupleElement).
       case HloOpcode::kBitcast:
       case HloOpcode::kCall:
       case HloOpcode::kConditional:
@@ -1543,20 +1639,28 @@ Status ShapeVerifier::CheckShape(const HloInstruction* instruction,
       case HloOpcode::kCopyDone:
       case HloOpcode::kCopyStart:
       case HloOpcode::kCustomCall:
-      case HloOpcode::kDynamicUpdateSlice:
       case HloOpcode::kGetTupleElement:
       case HloOpcode::kInfeed:
       case HloOpcode::kOutfeed:
+      case HloOpcode::kOptimizationBarrier:
       case HloOpcode::kParameter:
       case HloOpcode::kRecv:
       case HloOpcode::kRecvDone:
       case HloOpcode::kSend:
       case HloOpcode::kSendDone:
       case HloOpcode::kTuple:
-      case HloOpcode::kTupleSelect:
       case HloOpcode::kWhile:
         return ShapesSame(instruction->shape(), inferred_shape,
                           only_compare_minor_to_major_in_layout);
+      case HloOpcode::kDynamicUpdateSlice:
+        // For DynamicUpdateSlice it has an "in-place" update semantics, but
+        // inside of fusions memory space propagation doesn't propagate the
+        // memory spaces all the way, causing possible mismatches. Relax the
+        // constraint in that condition.
+        return ShapesSame(instruction->shape(), inferred_shape,
+                          only_compare_minor_to_major_in_layout,
+                          /*ignore_memory_space=*/
+                          instruction->parent()->IsFusionComputation());
 
       // We allow arbitrary layout and f32->bf16 transformations on all other
       // instructions, although this may be made more strict pending discussion
@@ -1577,7 +1681,7 @@ Status ShapeVerifier::CheckShape(const HloInstruction* instruction,
         StringifyShape(inferred_shape), StringifyShape(instruction->shape()),
         instruction->ToString());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ShapeVerifier::CheckShape(const HloInstruction* instruction,
@@ -1655,7 +1759,7 @@ Status ShapeVerifier::VerifyEntryComputationLayout(const HloModule& module) {
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 std::string ComputationsToString(
@@ -1721,7 +1825,7 @@ Status VerifyHloStructure(HloModule* module) {
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 namespace {
@@ -1752,7 +1856,7 @@ Status VerifyEntryAndExitShapes(const HloModule& module) {
           ShapeUtil::HumanString(param->shape()));
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Checks if the given two instructions share the same channel id.
@@ -1765,7 +1869,7 @@ Status CheckSameChannel(const HloInstruction* instr1,
         instr1->ToString(), *instr1->channel_id(), instr2->ToString(),
         *instr2->channel_id());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Checks if the given two instructions have the same is_host_transfer
@@ -1786,37 +1890,46 @@ Status CheckSameIsHostTransfer(const HloInstruction* instr1,
         "%s ",
         instr1->ToString(), instr2->ToString());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status VerifySingleUser(const HloInstruction* instruction,
-                        HloOpcode expected_user) {
+                        const absl::flat_hash_set<HloOpcode>& expected_users) {
   TF_RET_CHECK(instruction->users().size() == 1)
       << "The " << HloOpcodeString(instruction->opcode())
       << " instruction requires one consumer, found "
       << instruction->users().size();
 
   const HloInstruction* user = instruction->users().front();
-  TF_RET_CHECK(user->opcode() == expected_user)
+  TF_RET_CHECK(expected_users.contains(user->opcode()))
       << "The consumer of a " << HloOpcodeString(instruction->opcode())
-      << " instruction needs to be " << HloOpcodeString(expected_user)
-      << ", found " << HloOpcodeString(user->opcode());
-  return Status::OK();
+      << " instruction needs to be one of ("
+      << absl::StrJoin(expected_users, ", ",
+                       [](std::string* out, HloOpcode opcode) {
+                         out->append(HloOpcodeString(opcode));
+                       })
+      << "), found " << HloOpcodeString(user->opcode());
+  return OkStatus();
 }
 
 Status VerifySingleOperand(const HloInstruction* instruction,
-                           HloOpcode expected_operand) {
+                           const std::vector<HloOpcode>& expected_operands) {
   TF_RET_CHECK(instruction->operands().size() == 1)
       << "The " << HloOpcodeString(instruction->opcode())
       << " instruction requires one consumer, found "
       << instruction->users().size();
 
   const HloInstruction* operand = instruction->operand(0);
-  TF_RET_CHECK(operand->opcode() == expected_operand)
+  TF_RET_CHECK(absl::c_find(expected_operands, operand->opcode()) !=
+               expected_operands.end())
       << "The operand of a " << HloOpcodeString(instruction->opcode())
-      << " instruction needs to be " << HloOpcodeString(expected_operand)
+      << " instruction needs to be "
+      << absl::StrJoin(expected_operands, " or ",
+                       [](std::string* out, HloOpcode opcode) {
+                         out->append(HloOpcodeString(opcode));
+                       })
       << ", found " << HloOpcodeString(operand->opcode());
-  return Status::OK();
+  return OkStatus();
 }
 
 // Checks asynchronous instruction pairs.
@@ -1825,34 +1938,51 @@ Status VerifyAsynchronousInstructionPairs(const HloModule& module) {
   for (const HloComputation* computation : module.computations()) {
     for (const HloInstruction* instruction : computation->instructions()) {
       switch (instruction->opcode()) {
+        case HloOpcode::kAsyncStart: {
+          TF_RETURN_IF_ERROR(VerifySingleUser(
+              instruction, {HloOpcode::kAsyncUpdate, HloOpcode::kAsyncDone}));
+          break;
+        }
+        case HloOpcode::kAsyncUpdate: {
+          TF_RETURN_IF_ERROR(VerifySingleOperand(
+              instruction, {HloOpcode::kAsyncStart, HloOpcode::kAsyncUpdate}));
+          TF_RETURN_IF_ERROR(VerifySingleUser(
+              instruction, {HloOpcode::kAsyncUpdate, HloOpcode::kAsyncDone}));
+          break;
+        }
+        case HloOpcode::kAsyncDone: {
+          TF_RETURN_IF_ERROR(VerifySingleOperand(
+              instruction, {HloOpcode::kAsyncStart, HloOpcode::kAsyncUpdate}));
+          break;
+        }
         case HloOpcode::kAllReduceStart: {
           TF_RETURN_IF_ERROR(
-              VerifySingleUser(instruction, HloOpcode::kAllReduceDone));
+              VerifySingleUser(instruction, {HloOpcode::kAllReduceDone}));
           break;
         }
         case HloOpcode::kAllReduceDone: {
           TF_RETURN_IF_ERROR(
-              VerifySingleOperand(instruction, HloOpcode::kAllReduceStart));
+              VerifySingleOperand(instruction, {HloOpcode::kAllReduceStart}));
           break;
         }
         case HloOpcode::kCopyStart: {
           TF_RETURN_IF_ERROR(
-              VerifySingleUser(instruction, HloOpcode::kCopyDone));
+              VerifySingleUser(instruction, {HloOpcode::kCopyDone}));
           break;
         }
         case HloOpcode::kCopyDone: {
           TF_RETURN_IF_ERROR(
-              VerifySingleOperand(instruction, HloOpcode::kCopyStart));
+              VerifySingleOperand(instruction, {HloOpcode::kCopyStart}));
           break;
         }
         case HloOpcode::kCollectivePermuteStart: {
-          TF_RETURN_IF_ERROR(
-              VerifySingleUser(instruction, HloOpcode::kCollectivePermuteDone));
+          TF_RETURN_IF_ERROR(VerifySingleUser(
+              instruction, {HloOpcode::kCollectivePermuteDone}));
           break;
         }
         case HloOpcode::kCollectivePermuteDone: {
           TF_RETURN_IF_ERROR(VerifySingleOperand(
-              instruction, HloOpcode::kCollectivePermuteStart));
+              instruction, {HloOpcode::kCollectivePermuteStart}));
           break;
         }
         default:
@@ -1860,7 +1990,7 @@ Status VerifyAsynchronousInstructionPairs(const HloModule& module) {
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Checks that AllReduce instructions in the module are either all layout
@@ -1884,7 +2014,7 @@ Status VerifyLayoutConstrainedAllReduce(const HloModule& module) {
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Checks various invariants of channel instructions (send/recv and
@@ -1966,7 +2096,7 @@ Status VerifyChannels(const HloModule& module) {
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // CHECKs various invariants of a fusion instruction.
@@ -2093,7 +2223,7 @@ Status CheckFusionInstruction(HloInstruction* fusion) {
   // TODO(b/65423525): We'd like to check that all operands are distinct.
   // This is currently disabled due to the invariant being violated by
   // multi-output fusion.
-  return Status::OK();
+  return OkStatus();
 }
 
 // Checks that the operand shapes are compatible to the output shape, i.e.,
@@ -2137,19 +2267,18 @@ Status CheckElementwiseInstruction(HloInstruction* instruction) {
           ShapeUtil::HumanString(operand_shape));
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Visitor which verifies various fields on the HLO instruction. This class does
 // not check result shape as that is checked in the ShapeVerifier.
 class InstructionVerifier : public DfsHloVisitorWithDefault {
  public:
-  explicit InstructionVerifier(std::function<bool(const HloInstruction*)>
-                                   instruction_can_change_layout_func)
+  explicit InstructionVerifier(HloPredicate instruction_can_change_layout_func)
       : instruction_can_change_layout_func_(
             instruction_can_change_layout_func) {}
 
-  Status DefaultAction(HloInstruction*) override { return Status::OK(); }
+  Status DefaultAction(HloInstruction*) override { return OkStatus(); }
 
   Status HandleFusion(HloInstruction* fusion) override {
     return CheckFusionInstruction(fusion);
@@ -2166,12 +2295,12 @@ class InstructionVerifier : public DfsHloVisitorWithDefault {
         << ") has invalid number of dimensions: "
         << broadcast->dimensions().size()
         << " != " << broadcast->operand(0)->shape().rank();
-    return Status::OK();
+    return OkStatus();
   }
 
   Status HandleBitcastConvert(HloInstruction* c) override {
     // Shape verifier will check all we need.
-    return Status::OK();
+    return OkStatus();
   }
 
   Status HandleWhile(HloInstruction* xla_while) override {
@@ -2192,7 +2321,7 @@ class InstructionVerifier : public DfsHloVisitorWithDefault {
           "While loop must have exactly one operand; had %d : %s",
           xla_while->operand_count(), xla_while->ToString());
     }
-    return Status::OK();
+    return OkStatus();
   }
 
   Status HandleConditional(HloInstruction* conditional) override {
@@ -2204,7 +2333,7 @@ class InstructionVerifier : public DfsHloVisitorWithDefault {
             conditional->branch_computation(b)->num_parameters());
       }
     }
-    return Status::OK();
+    return OkStatus();
   }
 
   Status HandleElementwiseUnary(HloInstruction* instruction) override {
@@ -2217,7 +2346,7 @@ class InstructionVerifier : public DfsHloVisitorWithDefault {
 
   Status HandleGetTupleElement(HloInstruction* gte) override {
     TF_RET_CHECK(gte->operand(0)->shape().IsTuple());
-    return Status::OK();
+    return OkStatus();
   }
 
   Status HandleTranspose(HloInstruction* transpose) override {
@@ -2233,7 +2362,7 @@ class InstructionVerifier : public DfsHloVisitorWithDefault {
         << "shape: " << shape << ", operand->shape(): " << shape
         << ", dimensions: {" << absl::StrJoin(transpose->dimensions(), ", ")
         << "}";
-    return Status::OK();
+    return OkStatus();
   }
 
   Status HandleAllReduce(HloInstruction* crs) override {
@@ -2242,7 +2371,7 @@ class InstructionVerifier : public DfsHloVisitorWithDefault {
           << "All reduce channel id must be greater than 0 for "
           << crs->ToShortString();
     }
-    return Status::OK();
+    return OkStatus();
   }
 
   Status Preprocess(HloInstruction* instruction) override {
@@ -2255,7 +2384,7 @@ class InstructionVerifier : public DfsHloVisitorWithDefault {
         << previous->second->ToString()
         << " in computation: " << previous->second->parent()->name();
     instructions_by_name_[instruction->name()] = instruction;
-    return Status::OK();
+    return OkStatus();
   }
 
   Status Postprocess(HloInstruction* instruction) override {
@@ -2277,19 +2406,22 @@ class InstructionVerifier : public DfsHloVisitorWithDefault {
       }
     }
 
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
   absl::flat_hash_map<std::string, const HloInstruction*> instructions_by_name_;
   // Determines whether an instruction can change layouts.
-  std::function<bool(const HloInstruction*)>
-      instruction_can_change_layout_func_;
+  HloPredicate instruction_can_change_layout_func_;
 };
 
 }  // namespace
 
 StatusOr<bool> HloVerifier::Run(HloModule* module) {
+  auto disabled = module->config().debug_options().xla_disable_hlo_passes();
+  if (std::find(disabled.begin(), disabled.end(), name()) != disabled.end()) {
+    return false;
+  }
   auto status_or_changed = [&]() -> StatusOr<bool> {
     TF_RET_CHECK(!module->name().empty());
 

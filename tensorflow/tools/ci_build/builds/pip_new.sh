@@ -270,7 +270,7 @@ BUILD_BOTH_CPU_PACKAGES=${TF_BUILD_BOTH_CPU_PACKAGES:-$DEFAULT_BUILD_BOTH_CPU_PA
 AUDITWHEEL_TARGET_PLAT=${TF_AUDITWHEEL_TARGET_PLAT:-$DEFAULT_AUDITWHEEL_TARGET_PLAT}
 
 # Override breaking change in setuptools v60 (https://github.com/pypa/setuptools/pull/2896)
-SETUPTOOLS_USE_DISTUTILS=stdlib
+export SETUPTOOLS_USE_DISTUTILS=stdlib
 
 # Local variables
 PIP_WHL_DIR="${KOKORO_ARTIFACTS_DIR}/tensorflow/${PIP_TEST_ROOT}/whl"
@@ -325,9 +325,9 @@ if [[ -z "$PYTHON_BIN_PATH" ]]; then
   die "PYTHON_BIN_PATH was not provided. Did you run configure?"
 fi
 
-# TODO(mihaimaruseac): Find a better place for this
-# It seems that now TB is needed to build TF API, so install it.
 ${PYTHON_BIN_PATH} -m pip install tb-nightly
+${PYTHON_BIN_PATH} -m pip uninstall -y protobuf
+${PYTHON_BIN_PATH} -m pip install "protobuf < 4"
 
 # Bazel build the file.
 PIP_BUILD_TARGET="//tensorflow/tools/pip_package:build_pip_package"
@@ -483,7 +483,7 @@ install_tensorflow_pip() {
 
   # setuptools v60.0.0 introduced a breaking change on how distutils is linked
   # https://github.com/pypa/setuptools/blob/main/CHANGES.rst#v6000
-  ${PIP_BIN_PATH} install --upgrade "setuptools<60" || \
+  ${PIP_BIN_PATH} install --upgrade "setuptools" || \
     die "Error: setuptools install, upgrade FAILED"
 
   # Force tensorflow reinstallation. Otherwise it may not get installed from
@@ -762,12 +762,10 @@ if [[ ${OS_TYPE} == "ubuntu" ]] && \
   for WHL_PATH in $(ls ${PIP_WHL_DIR}/*.whl); do
     # Repair the wheels for cpu manylinux2010/manylinux2014
     echo "auditwheel repairing ${WHL_PATH}"
-    auditwheel repair --plat ${AUDITWHEEL_TARGET_PLAT}_x86_64 -w "${WHL_DIR}" "${WHL_PATH}"
+    auditwheel repair --plat ${AUDITWHEEL_TARGET_PLAT}_$(uname -m) -w "${WHL_DIR}" "${WHL_PATH}"
 
-    WHL_BASE_NAME=$(basename "${WHL_PATH}")
-    AUDITED_WHL_NAME="${WHL_DIR}"/$(echo "${WHL_BASE_NAME//linux/${AUDITWHEEL_TARGET_PLAT}}")
-    if [[ -f ${AUDITED_WHL_NAME} ]]; then
-      WHL_PATH=${AUDITED_WHL_NAME}
+    if [[ $(ls ${WHL_DIR} | grep ${AUDITWHEEL_TARGET_PLAT} | wc -l) == 1 ]] ; then
+      WHL_PATH=${WHL_DIR}/$(ls ${WHL_DIR} | grep ${AUDITWHEEL_TARGET_PLAT})
       echo "Repaired ${AUDITWHEEL_TARGET_PLAT} wheel file at: ${WHL_PATH}"
     else
       die "WARNING: Cannot find repaired wheel."

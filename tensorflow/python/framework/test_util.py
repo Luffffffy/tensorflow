@@ -37,6 +37,7 @@ import six
 from google.protobuf import descriptor_pool
 from google.protobuf import text_format
 
+from tensorflow.core.config import flags
 from tensorflow.core.framework import graph_pb2
 from tensorflow.core.protobuf import rewriter_config_pb2
 from tensorflow.python import pywrap_sanitizers
@@ -1193,6 +1194,89 @@ def with_eager_op_as_function(cls=None, only_as_function=False):
   return decorator
 
 
+def enable_graph_building_optimization(fn):
+  """Decorator for enabling graph_building_optimization on a test.
+
+  This function returns a decorator intended to be applied to test methods in
+  a `tf.test.TestCase` class. Doing so will enable graph_building_optimization,
+  execute the test, then reset the feature flag to its default value.
+
+  Example:
+
+  class MyTest(test.TestCase):
+
+    @enable_graph_building_optimization
+    def testFoo(self):
+      ...
+
+  Args:
+    fn: the function to be wrapped.
+
+  Returns:
+    The wrapped function.
+  """
+
+  def wrapper(*args, **kwargs):
+    # If `graph_building_optimization` is already enabled do nothing.
+    if flags.config().graph_building_optimization.value():
+      return fn(*args, **kwargs)
+
+    flags.config().graph_building_optimization.reset(True)
+    try:
+      return fn(*args, **kwargs)
+    finally:
+      flags.config().graph_building_optimization.reset(False)
+
+  return wrapper
+
+
+def add_graph_building_optimization_tests(cls=None):
+  """Adds methods with graph_building_optimization enabled to the test suite.
+
+  Example:
+
+  @test_util.add_graph_building_optimization_tests
+  class FooTest(test.TestCase):
+
+    def testBar(self):
+      ...
+
+  Generated class:
+  class FooTest(test.TestCase):
+
+    def testBar(self):
+      ...
+
+    def testBarWithGraphBuildingOptimization(self):
+      // Enable graph_building_optimization
+      testBar(self)
+      // Disable graph_building_optimization
+
+  Args:
+    cls: class to decorate.
+
+  Returns:
+    cls with new test methods added.
+  """
+
+  def decorator(cls):
+    if flags.config().graph_building_optimization.value():
+      return cls
+
+    for name, value in cls.__dict__.copy().items():
+      if (callable(value) and
+          (name.startswith(unittest.TestLoader.testMethodPrefix) or
+           name.startswith("benchmark"))):
+        setattr(cls, name + "WithGraphBuildingOptimization",
+                enable_graph_building_optimization(value))
+    return cls
+
+  if cls is not None:
+    return decorator(cls)
+
+  return decorator
+
+
 def disable_eager_op_as_function(unused_msg):
   """Decorator for a function in a with_eager_op_as_function enabled test class.
 
@@ -1310,7 +1394,7 @@ def build_as_function_and_v1_graph(func=None):
           function_in_eager()
         ops.dismantle_graph(graph_for_eager_test)
       else:
-        return ValueError("Unknown run mode %s" % run_mode)
+        raise ValueError("Unknown run mode %s" % run_mode)
 
     return decorated
 
@@ -2531,7 +2615,8 @@ class TensorFlowTestCase(googletest.TestCase):
           return indexed_slices.IndexedSlicesValue(
               values=tensor.values.numpy(),
               indices=tensor.indices.numpy(),
-              dense_shape=tensor.dense_shape.numpy())
+              dense_shape=None
+              if tensor.dense_shape is None else tensor.dense_shape.numpy())
         # Convert tensors and composite tensors to numpy arrays.
         return nest.map_structure(lambda t: t.numpy(), tensor,
                                   expand_composites=True)
@@ -3176,6 +3261,7 @@ class TensorFlowTestCase(googletest.TestCase):
       self.assertAllEqual(a, b)
     except AssertionError:
       return
+    msg = msg or ""
     raise AssertionError("The two values are equal at all elements. %s" % msg)
 
   @py_func_if_in_function
@@ -3632,6 +3718,28 @@ class TensorFlowTestCase(googletest.TestCase):
       return self._cached_session
 
 
+ASSIGNED_PORTS = set()
+lock = threading.Lock()
+
+
+def pick_unused_port():
+  """Returns an unused and unassigned local port."""
+  import portpicker  # pylint: disable=g-import-not-at-top
+
+  global ASSIGNED_PORTS
+  with lock:
+    while True:
+      try:
+        port = portpicker.pick_unused_port()
+      except portpicker.NoFreePortFoundError as porterror:
+        raise unittest.SkipTest("Flakes in portpicker library do not represent"
+                                " TensorFlow errors.") from porterror
+      if port > 10000 and port not in ASSIGNED_PORTS:
+        ASSIGNED_PORTS.add(port)
+        logging.info("Using local port %r", port)
+        return port
+
+
 @tf_export("test.create_local_cluster")
 def create_local_cluster(num_workers,
                          num_ps,
@@ -3690,9 +3798,8 @@ def create_local_cluster(num_workers,
   Raises:
     ImportError: if portpicker module was not found at load time
   """
-  import portpicker  # pylint: disable=g-import-not-at-top
-  worker_ports = [portpicker.pick_unused_port() for _ in range(num_workers)]
-  ps_ports = [portpicker.pick_unused_port() for _ in range(num_ps)]
+  worker_ports = [pick_unused_port() for _ in range(num_workers)]
+  ps_ports = [pick_unused_port() for _ in range(num_ps)]
   cluster_dict = {
       "worker": ["localhost:%s" % port for port in worker_ports],
       "ps": ["localhost:%s" % port for port in ps_ports]

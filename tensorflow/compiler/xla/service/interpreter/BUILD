@@ -17,7 +17,6 @@ cc_library(
         "//tensorflow/compiler/xla/service:generic_transfer_manager",
         "//tensorflow/compiler/xla/service:transfer_manager",
         "//tensorflow/compiler/xla/service/interpreter:platform_id",
-        "//tensorflow/core:lib",
         "@com_google_absl//absl/memory",
     ],
     alwayslink = True,  # Contains per-platform transfer manager registration
@@ -95,7 +94,6 @@ cc_library(
         "//tensorflow/stream_executor:event",
         "//tensorflow/stream_executor:stream",
         "//tensorflow/stream_executor/lib",
-        "@com_google_absl//absl/types:optional",
     ],
 )
 
@@ -122,10 +120,8 @@ cc_library(
         "//tensorflow/compiler/xla/service:shaped_buffer",
         "//tensorflow/compiler/xla/service:transfer_manager",
         "//tensorflow/core:lib",
-        "//tensorflow/core/platform:macros",
         "//tensorflow/core/platform:mutex",
         "//tensorflow/core/platform:stream_executor_no_cuda",
-        "//tensorflow/core/platform:types",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/types:span",
     ],

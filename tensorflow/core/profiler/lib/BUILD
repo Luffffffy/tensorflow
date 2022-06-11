@@ -72,8 +72,10 @@ cc_library(
         "//tensorflow/core/profiler:profiler_options_proto_cc",
         "@com_google_absl//absl/memory",
     ] + if_not_android([
+        "//tensorflow/core:lib_internal",
         ":profiler_interface",
         ":profiler_factory",
+        ":profiler_collection",
         ":profiler_lock",
         "//tensorflow/core/profiler/convert:post_process_single_host_xplane",
         "//tensorflow/core/profiler/utils:time_utils",
@@ -103,6 +105,7 @@ cc_library(
         "//tensorflow/core/profiler:__pkg__",
     ],
     deps = [
+        ":profiler_controller",
         ":profiler_interface",
         "//tensorflow/core:lib",
         "//tensorflow/core/profiler:profiler_options_proto_cc",
@@ -139,22 +142,40 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "profiler_collection",
+    srcs = ["profiler_collection.cc"],
+    hdrs = ["profiler_collection.h"],
+    deps = [
+        ":profiler_interface",
+        "//tensorflow/core:lib",
+        "//tensorflow/core/profiler/protobuf:xplane_proto_cc",
+    ],
+)
+
+cc_library(
+    name = "profiler_controller",
+    srcs = ["profiler_controller.cc"],
+    hdrs = ["profiler_controller.h"],
+    deps = [
+        ":profiler_interface",
+        "//tensorflow/core:lib",
+        "//tensorflow/core/profiler/protobuf:xplane_proto_cc",
+    ],
+)
+
 tf_cuda_library(
     name = "profiler_backends",
     cuda_deps = [
-        "//tensorflow/core/profiler/internal/gpu:device_tracer",
-        # Metadata collector does not compile for Cast,
-        # due to its dependency on human_readable_json.
-        # Also, it is only used for XLA:GPU support and
-        # thus move it inside cuda_deps.
-        # TODO(b/155130190): Gate deps and cuda_deps here so they are empty
-        # when compiling for a mobile platform.
-        "//tensorflow/core/profiler/internal/cpu:metadata_collector",
+        "//tensorflow/core/profiler/backends/gpu:device_tracer",
     ],
     visibility = ["//tensorflow:internal"],
     deps = [
-        "//tensorflow/core/profiler/internal/cpu:host_tracer",
-    ] + if_libtpu(["//tensorflow/core/profiler/internal/tpu:tpu_tracer"]),
+        "//tensorflow/core/profiler/backends/cpu:host_tracer",
+        "//tensorflow/core/profiler/backends/cpu:metadata_collector",
+    ] + if_libtpu([
+        "//tensorflow/core/profiler/backends/tpu:tpu_tracer",
+    ]),
     alwayslink = True,
 )
 
@@ -174,7 +195,7 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core/platform",
     ] + if_not_android([
-        "//tensorflow/core/profiler/internal/cpu:traceme_recorder",
+        "//tensorflow/core/profiler/backends/cpu:traceme_recorder",
         "//tensorflow/core/profiler/utils:time_utils",
     ]),
 )
@@ -219,12 +240,26 @@ cc_library(
     hdrs = ["connected_traceme.h"],
     visibility = ["//visibility:public"],
     deps = [
+        ":context_types_hdrs",
         ":traceme",
         ":traceme_encode",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
     ],
+)
+
+cc_library(
+    name = "context_types_hdrs",
+    hdrs = ["context_types.h"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "context_types",
+    srcs = ["context_types.cc"],
+    hdrs = ["context_types.h"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -245,7 +280,7 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core/platform",
     ] + if_not_android([
-        "//tensorflow/core/profiler/internal/cpu:annotation_stack",
+        "//tensorflow/core/profiler/backends/cpu:annotation_stack",
     ]),
 )
 
@@ -259,7 +294,7 @@ tf_cc_test(
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
-        "//tensorflow/core/profiler/internal/cpu:annotation_stack",
+        "//tensorflow/core/profiler/backends/cpu:annotation_stack",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -314,6 +349,7 @@ filegroup(
     srcs = [
         "annotated_traceme.h",
         "connected_traceme.h",
+        "context_types.h",
         "device_profiler_session.h",
         "profiler_interface.h",
     ],

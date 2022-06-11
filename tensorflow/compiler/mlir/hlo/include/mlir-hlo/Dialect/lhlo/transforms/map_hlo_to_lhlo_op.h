@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_MLIR_HLO_INCLUDE_MLIR_HLO_DIALECT_LHLO_TRANSFORMS_MAP_HLO_TO_LHLO_OP_H_
-#define TENSORFLOW_COMPILER_MLIR_HLO_INCLUDE_MLIR_HLO_DIALECT_LHLO_TRANSFORMS_MAP_HLO_TO_LHLO_OP_H_
+#ifndef MLIR_HLO_DIALECT_LHLO_TRANSFORMS_MAP_HLO_TO_LHLO_OP_H
+#define MLIR_HLO_DIALECT_LHLO_TRANSFORMS_MAP_HLO_TO_LHLO_OP_H
 
 #include <type_traits>
 
@@ -41,6 +41,8 @@ MAP_HLO_TO_LHLO(AbsOp);
 MAP_HLO_TO_LHLO(AddOp);
 MAP_HLO_TO_LHLO(AndOp);
 MAP_HLO_TO_LHLO(Atan2Op);
+MAP_HLO_TO_LHLO(BatchNormGradOp);
+MAP_HLO_TO_LHLO(BatchNormTrainingOp);
 MAP_HLO_TO_LHLO(BitcastConvertOp);
 MAP_HLO_TO_LHLO(BroadcastInDimOp);
 MAP_HLO_TO_LHLO(CeilOp);
@@ -81,6 +83,7 @@ MAP_HLO_TO_LHLO(PowOp);
 MAP_HLO_TO_LHLO(RealDynamicSliceOp);
 MAP_HLO_TO_LHLO(RealOp);
 MAP_HLO_TO_LHLO(ReduceOp);
+MAP_HLO_TO_LHLO(ReduceWindowOp);
 MAP_HLO_TO_LHLO(ReshapeOp);
 MAP_HLO_TO_LHLO(RemOp);
 MAP_HLO_TO_LHLO(RsqrtOp);
@@ -102,4 +105,4 @@ MAP_HLO_TO_LHLO(XorOp);
 }  // namespace mhlo
 }  // namespace mlir
 
-#endif  // TENSORFLOW_COMPILER_MLIR_HLO_INCLUDE_MLIR_HLO_DIALECT_LHLO_TRANSFORMS_MAP_HLO_TO_LHLO_OP_H_
+#endif  // MLIR_HLO_DIALECT_LHLO_TRANSFORMS_MAP_HLO_TO_LHLO_OP_H

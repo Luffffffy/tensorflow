@@ -436,7 +436,7 @@ static void GenOperandResultVerifier(raw_ostream &os,
   mlir::tblgen::FmtContext fctx;
 
   bool first = true;
-  for (auto static_value : llvm::enumerate(values)) {
+  for (const auto &static_value : llvm::enumerate(values)) {
     auto *definit = llvm::cast<llvm::DefInit>(static_value.value());
     auto *val = definit->getDef()->getValue("tflRuntimeTypePredicate");
     if (!val) continue;
@@ -562,9 +562,9 @@ static bool RuntimeVerifierWriterMain(raw_ostream &os, RecordKeeper &records) {
           "     // in the pass manager can be multi-threaded.\n"
           "        return success(current_thread_id == llvm::get_threadid());\n"
           "   });\n";
-    os << "  return top.verify();\n";
+    os << "  return top.verifyInvariants();\n";
     os << "    } else {\n";
-    os << "  return top.verify();\n}\n";
+    os << "  return top.verifyInvariants();\n}\n";
     os << "}\n";
   }
 

@@ -22,7 +22,6 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/compiler/xla/types.h"
-#include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/stream_executor_no_cuda.h"
 
 namespace xla {
@@ -55,7 +54,7 @@ class PlatformUtil {
   // If the platform has no visible devices, a not-found error is returned.
   static StatusOr<std::vector<se::StreamExecutor*>> GetStreamExecutors(
       se::Platform* platform,
-      const absl::optional<std::set<int>>& allowed_devices = absl::nullopt);
+      const std::optional<std::set<int>>& allowed_devices = std::nullopt);
 
  private:
   PlatformUtil(const PlatformUtil&) = delete;

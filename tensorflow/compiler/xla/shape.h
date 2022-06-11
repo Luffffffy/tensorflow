@@ -16,12 +16,12 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_SHAPE_H_
 #define TENSORFLOW_COMPILER_XLA_SHAPE_H_
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/container/inlined_vector.h"
-#include "absl/types/optional.h"
 #include "tensorflow/compiler/xla/layout.h"
 #include "tensorflow/compiler/xla/primitive_util.h"
 #include "tensorflow/compiler/xla/types.h"
@@ -115,8 +115,16 @@ class Shape {
   // Methods for accessing the dimensions array.
   int dimensions_size() const { return dimensions_.size(); }
   int64_t dimensions(int index) const { return dimensions_.at(index); }
+  int64_t dimensions_minor(int index) const {
+    CHECK(has_layout());
+    return dimensions_.at(layout_.minor_to_major(index));
+  }
   void set_dimensions(int index, int64_t value) {
     dimensions_.at(index) = value;
+  }
+  void set_dimensions_minor(int index, int64_t value) {
+    CHECK(has_layout());
+    dimensions_.at(layout_.minor_to_major(index)) = value;
   }
   void add_dimensions(int64_t value) {
     dimensions_.push_back(value);
@@ -250,10 +258,25 @@ class Shape {
   bool operator==(const Shape& other) const { return Equal()(*this, other); }
   bool operator!=(const Shape& other) const { return !(*this == other); }
 
+  template <typename H, bool kIsLayoutSensitive = true>
+  static H Hash(H h, const Shape& s) {
+    if (s.IsTuple()) {
+      for (const Shape& subshape : s.tuple_shapes_) {
+        h = Shape::Hash<H, kIsLayoutSensitive>(std::move(h), subshape);
+      }
+      return H::combine(std::move(h), s.tuple_shapes_size());
+    }
+    h = H::combine(std::move(h), s.element_type_, s.dimensions_,
+                   s.dynamic_dimensions_);
+    if (kIsLayoutSensitive) {
+      h = H::combine(std::move(h), s.layout_);
+    }
+    return std::move(h);
+  }
+
   template <typename H>
   friend H AbslHashValue(H h, const Shape& s) {
-    return H::combine(std::move(h), s.element_type_, s.dimensions_,
-                      s.dynamic_dimensions_, s.tuple_shapes_, s.layout_);
+    return Shape::Hash(std::move(h), s);
   }
 
  private:

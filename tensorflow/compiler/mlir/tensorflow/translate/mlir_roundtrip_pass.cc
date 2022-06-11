@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_pass.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/IR/Verifier.h"  // from @llvm-project
@@ -31,9 +32,9 @@ namespace tensorflow {
 
 using mlir::MLIRContext;
 
-static stream_executor::port::StatusOr<mlir::OwningModuleRef> Import(
-    const GraphOptimizationPassOptions& options, const Graph& graph,
-    MLIRContext* context) {
+static stream_executor::port::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>>
+Import(const GraphOptimizationPassOptions& options, const Graph& graph,
+       MLIRContext* context) {
   // TODO(fengliuai): get debug info at runtime.
   GraphDebugInfo debug_info;
   GraphImportConfig specs;
@@ -50,7 +51,7 @@ static stream_executor::port::StatusOr<mlir::OwningModuleRef> Import(
   return module;
 }
 
-static Status Export(mlir::OwningModuleRef module,
+static Status Export(mlir::OwningOpRef<mlir::ModuleOp> module,
                      const GraphOptimizationPassOptions& options,
                      std::unique_ptr<Graph>* graph) {
   GraphExportConfig confs;
@@ -73,7 +74,7 @@ Status MlirRoundtripPass::Run(const GraphOptimizationPassOptions& options) {
     // TODO(jpienaar): Roundtrip results in different failures, investigate.
     TF_RETURN_IF_ERROR(Import(options, *it.second, &context).status());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

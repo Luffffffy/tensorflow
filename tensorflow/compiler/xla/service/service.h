@@ -40,7 +40,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/xla.pb.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/stream_executor_no_cuda.h"
 #include "tensorflow/stream_executor/device_memory_allocator.h"
 
@@ -65,14 +64,14 @@ class ServiceOptions {
   // Sets the allowed_devices set for selectively constructing stream executors
   // on the platform.
   ServiceOptions& set_allowed_devices(
-      const absl::optional<std::set<int>>& allowed_devices);
-  const absl::optional<std::set<int>>& allowed_devices() const;
+      const std::optional<std::set<int>>& allowed_devices);
+  const std::optional<std::set<int>>& allowed_devices() const;
 
  private:
   se::Platform* platform_ = nullptr;
   int number_of_replicas_ = 1;
   int intra_op_parallelism_threads_ = -1;
-  absl::optional<std::set<int>> allowed_devices_;
+  std::optional<std::set<int>> allowed_devices_;
 };
 
 // The XLA service object, which is the same across all platforms. It maintains
@@ -241,6 +240,15 @@ class Service : public ServiceInterface {
   // Same as BuildExecutable() above, but builds a list of Executables for the
   // given computations that may interact with each other.
   StatusOr<std::vector<std::unique_ptr<Executable>>> BuildExecutables(
+      const std::vector<const HloModuleProto*>& module_protos,
+      std::vector<std::unique_ptr<HloModuleConfig>> module_configs,
+      Backend* backend, std::vector<std::vector<se::StreamExecutor*>> executors,
+      const Compiler::CompileOptions& options, bool run_backend_only = false);
+
+  // Same as BuildExecutable() above, but builds a list of
+  // AotCompilationResult(s), which can be persisted to later load Executable
+  // objects.
+  StatusOr<std::vector<std::unique_ptr<AotCompilationResult>>> BuildAotResults(
       const std::vector<const HloModuleProto*>& module_protos,
       std::vector<std::unique_ptr<HloModuleConfig>> module_configs,
       Backend* backend, std::vector<std::vector<se::StreamExecutor*>> executors,

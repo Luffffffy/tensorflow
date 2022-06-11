@@ -16,10 +16,10 @@ limitations under the License.
 #include "tensorflow/compiler/xla/literal.h"
 
 #include <limits>
+#include <memory>
 #include <vector>
 
 #include "absl/base/casts.h"
-#include "absl/memory/memory.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/xla/array3d.h"
@@ -30,7 +30,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/test.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
-#include "tensorflow/core/platform/macros.h"
 
 namespace xla {
 namespace {
@@ -1296,7 +1295,8 @@ TEST_F(LiteralUtilTest, PopulateParallel) {
         primitive_util::NativeToPrimitiveType<uint32_t>(), data.dimensions,
         data.layout);
     Literal literal(shape);
-    auto generator = [&](absl::Span<const int64_t> indexes) -> uint32_t {
+    auto generator = [&](absl::Span<const int64_t> indexes,
+                         int /*thread_id*/) -> uint32_t {
       // Offsets from linear index just to avoid R0 literals to be initialized
       // with zero.
       return IndexUtil::MultidimensionalIndexToLinearIndex(literal.shape(),
@@ -1310,7 +1310,7 @@ TEST_F(LiteralUtilTest, PopulateParallel) {
     bool matched = true;
     auto check_function = [&](absl::Span<const int64_t> indexes) {
       auto value = literal.Get<uint32_t>(indexes);
-      matched = matched && (value == generator(indexes));
+      matched = matched && (value == generator(indexes, /*thread_id=*/-1));
       return matched;
     };
     ShapeUtil::ForEachIndex(literal.shape(), zero_base, data.dimensions, step,
@@ -1517,7 +1517,7 @@ TEST_F(LiteralUtilTest, BitcastConvertBetweenInvalidTypes) {
   Status status =
       literal.BitcastConvert(ShapeUtil::ChangeElementType(literal.shape(), F64))
           .status();
-  EXPECT_NE(Status::OK(), status);
+  EXPECT_NE(OkStatus(), status);
   EXPECT_TRUE(absl::StrContains(status.error_message(),
                                 "to a shape of different size"));
 }

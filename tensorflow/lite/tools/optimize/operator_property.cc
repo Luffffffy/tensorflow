@@ -194,6 +194,7 @@ OperatorProperty GetOperatorProperty(OpVariant op_variant) {
       // hence does not need to be quantized.
       property.inputs = {{0, {}}};
       property.outputs = {{0, {}}};
+      property.restrict_same_input_output_scale = true;
       property.version = 1;
       break;
     case BuiltinOperator_FILL: {
@@ -1057,6 +1058,11 @@ OperatorProperty GetOperatorProperty(OpVariant op_variant) {
       break;
     case BuiltinOperator_VAR_HANDLE:
       property.version = 1;
+      break;
+    case BuiltinOperator_GELU:
+      property.inputs = {{0, {}}};
+      property.outputs = {{0, {}}};
+      property.version = 2;
       break;
     default:
       // No quantized implementation exists for this operation.

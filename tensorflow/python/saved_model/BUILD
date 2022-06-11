@@ -32,7 +32,6 @@ py_strict_library(
         ":loader",
         ":main_op",
         ":method_name_updater",
-        ":registration",
         ":save",
         ":signature_constants",
         ":signature_def_utils",
@@ -41,6 +40,7 @@ py_strict_library(
         ":utils",
         "//tensorflow/python:util",
         "//tensorflow/python/saved_model/model_utils",
+        "//tensorflow/python/saved_model/registration",
     ],
 )
 
@@ -336,7 +336,6 @@ py_strict_library(
         ":builder",
         ":function_serialization",
         ":pywrap_saved_model",
-        ":registration",
         ":revived_types",
         ":save_context",
         ":save_options",
@@ -346,6 +345,7 @@ py_strict_library(
         ":tag_constants",
         ":utils",
         "//tensorflow/core:protos_all_py",
+        "//tensorflow/core/config:flags_py",
         "//tensorflow/python:array_ops",
         "//tensorflow/python:constant_op",
         "//tensorflow/python:control_flow_ops",
@@ -362,9 +362,12 @@ py_strict_library(
         "//tensorflow/python:tensor_util",
         "//tensorflow/python:util",
         "//tensorflow/python:versions",
+        "//tensorflow/python/checkpoint:util",
         "//tensorflow/python/eager:context",
         "//tensorflow/python/eager:def_function",
         "//tensorflow/python/eager:function",
+        "//tensorflow/python/eager:function_saved_model_utils",
+        "//tensorflow/python/saved_model/registration",
         "//tensorflow/python/training/saving:checkpoint_options",
         "//tensorflow/python/training/saving:functional_saver",
         "//tensorflow/python/training/saving:saveable_object_util",
@@ -409,7 +412,6 @@ py_library(
         ":loader",
         ":nested_structure_coder",
         ":pywrap_saved_model",
-        ":registration",
         ":revived_types",
         ":utils",
         "//tensorflow/core:protos_all_py",
@@ -431,6 +433,7 @@ py_library(
         "//tensorflow/python/eager:context",
         "//tensorflow/python/eager:def_function",
         "//tensorflow/python/eager:function",
+        "//tensorflow/python/saved_model/registration",
         "//tensorflow/python/training/saving:checkpoint_options",
         "//tensorflow/python/training/saving:saveable_object_util",
         "//tensorflow/python/training/tracking",
@@ -515,45 +518,6 @@ tf_py_test(
         "//tensorflow/python:session",
         "//tensorflow/python:tensor_spec",
         "//tensorflow/python:variables",
-        "//tensorflow/python/eager:def_function",
-        "//tensorflow/python/eager:test",
-        "//tensorflow/python/training/tracking",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-py_strict_library(
-    name = "registration",
-    srcs = [
-        "registration.py",
-    ],
-    srcs_version = "PY3",
-    deps = [
-        "//tensorflow/python/util",
-    ],
-)
-
-tf_py_test(
-    name = "registration_test",
-    srcs = ["registration_test.py"],
-    deps = [
-        ":registration",
-        "//tensorflow/python/eager:test",
-        "//tensorflow/python/training/tracking:base",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "registration_saving_test",
-    srcs = ["registration_saving_test.py"],
-    deps = [
-        ":registration",
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_ops",
-        "//tensorflow/python:io_ops",
-        "//tensorflow/python:resource_variable_ops",
         "//tensorflow/python/eager:def_function",
         "//tensorflow/python/eager:test",
         "//tensorflow/python/training/tracking",
@@ -738,11 +702,7 @@ tf_python_pybind_extension(
         "pywrap_saved_model_metrics.h",
     ],
     features = ["-layering_check"],
-    module_name = "pywrap_saved_model",
-    visibility = [
-        "//tensorflow/python/saved_model:__subpackages__",
-        "//tensorflow/python/training:__subpackages__",
-    ],
+    visibility = ["//tensorflow/python/training:__subpackages__"],
     deps = [
         ":pywrap_saved_model_headers",
         "//tensorflow/cc/experimental/libexport:save",

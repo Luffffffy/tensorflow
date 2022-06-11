@@ -15,17 +15,20 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/service.h"
 
+#include <algorithm>
+#include <functional>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "tensorflow/compiler/xla/debug_options_flags.h"
 #include "tensorflow/compiler/xla/execution_options_util.h"
 #include "tensorflow/compiler/xla/layout_util.h"
+#include "tensorflow/compiler/xla/service/backend.h"
 #include "tensorflow/compiler/xla/service/compiler.h"
 #include "tensorflow/compiler/xla/service/computation_layout.h"
 #include "tensorflow/compiler/xla/service/computation_placer.h"
@@ -82,7 +85,7 @@ Status RecordArguments(const absl::Span<const ShapedBuffer* const> arguments,
         transfer_manager->TransferLiteralFromDevice(stream, *argument));
     *module->add_arguments() = literal.ToProto();
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Records the result of a computation in a HloSnapshot proto.
@@ -93,7 +96,7 @@ Status RecordResult(const ShapedBuffer& result, se::Stream* stream,
       Literal literal,
       transfer_manager->TransferLiteralFromDevice(stream, result));
   *module->mutable_result() = literal.ToProto();
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -123,12 +126,12 @@ int ServiceOptions::intra_op_parallelism_threads() const {
 }
 
 ServiceOptions& ServiceOptions::set_allowed_devices(
-    const absl::optional<std::set<int>>& allowed_devices) {
+    const std::optional<std::set<int>>& allowed_devices) {
   allowed_devices_ = allowed_devices;
   return *this;
 }
 
-const absl::optional<std::set<int>>& ServiceOptions::allowed_devices() const {
+const std::optional<std::set<int>>& ServiceOptions::allowed_devices() const {
   return allowed_devices_;
 }
 
@@ -188,7 +191,7 @@ Status Service::CreateChannelHandle(const CreateChannelHandleRequest* arg,
                                     CreateChannelHandleResponse* result) {
   TF_ASSIGN_OR_RETURN(*result->mutable_channel(),
                       channel_tracker_.NewChannel(arg->channel_type()));
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::Unregister(const UnregisterRequest* arg,
@@ -213,7 +216,7 @@ Status Service::DeconstructTuple(const DeconstructTupleRequest* arg,
   for (auto& element : elements) {
     *result->add_element_handles() = element;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::ValidateResultShape(const Shape& client_shape,
@@ -226,7 +229,7 @@ Status Service::ValidateResultShape(const Shape& client_shape,
         ShapeUtil::HumanStringWithLayout(client_shape),
         ShapeUtil::HumanString(result_shape));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 StatusOr<std::vector<std::vector<const ShapedBuffer*>>>
@@ -260,7 +263,7 @@ StatusOr<std::unique_ptr<HloModuleConfig>> Service::CreateModuleConfig(
     const ExecutionOptions* execution_options,
     const AotCompilationOptions* aot_options) {
   int default_num_replicas = options_.number_of_replicas();
-  absl::optional<int> num_threads;
+  std::optional<int> num_threads;
   if (execute_backend_ != nullptr &&
       execute_backend_->eigen_intra_op_thread_pool() != nullptr) {
     num_threads = execute_backend_->eigen_intra_op_thread_pool()->NumThreads();
@@ -278,7 +281,7 @@ StatusOr<std::unique_ptr<HloModuleConfig>> Service::CreateModuleConfig(
     const AotCompilationOptions* aot_options) {
   std::vector<const Shape*> argument_shapes;
   for (const auto* arg : arguments) {
-    argument_shapes.push_back(&arg->on_host_shape());
+    argument_shapes.push_back(&arg->on_device_shape());
   }
   return CreateModuleConfig(program_shape, argument_shapes, &execution_options,
                             aot_options);
@@ -298,12 +301,15 @@ StatusOr<std::vector<std::unique_ptr<Executable>>> Service::BuildExecutables(
 
   CHECK_EQ(module_protos.size(), module_configs.size());
   auto module_group =
-      absl::make_unique<HloModuleGroup>(module_protos[0]->name());
+      std::make_unique<HloModuleGroup>(module_protos[0]->name());
   for (int64_t i = 0, end = module_protos.size(); i < end; ++i) {
     const HloModuleProto* proto = module_protos[i];
     const HloModuleConfig& config = *module_configs[i];
     TF_ASSIGN_OR_RETURN(
         auto module, CreateModuleFromProto(*proto, config, run_backend_only));
+    UpdateEntryComputationLayout(
+        module.get(), std::bind(&Compiler::DefaultDeviceShapeRepresentation,
+                                backend->compiler(), std::placeholders::_1));
     DumpHloModuleIfEnabled(*module, kBeforeOptimizationsDumpName);
     module_group->push_back(std::move(module));
   }
@@ -324,6 +330,43 @@ StatusOr<std::vector<std::unique_ptr<Executable>>> Service::BuildExecutables(
   }
 
   return std::move(executables);
+}
+
+StatusOr<std::vector<std::unique_ptr<AotCompilationResult>>>
+Service::BuildAotResults(
+    const std::vector<const HloModuleProto*>& module_protos,
+    std::vector<std::unique_ptr<HloModuleConfig>> module_configs,
+    Backend* backend, std::vector<std::vector<se::StreamExecutor*>> executors,
+    const Compiler::CompileOptions& options, bool run_backend_only) {
+  VLOG(1) << StrFormat("BuildAotResults on service %p", this);
+
+  VLOG(1) << "Computations:";
+  for (const HloModuleProto* proto : module_protos) {
+    VLOG(1) << proto->name();
+  }
+
+  CHECK_EQ(module_protos.size(), module_configs.size());
+  auto module_group =
+      std::make_unique<HloModuleGroup>(module_protos[0]->name());
+  for (int64_t i = 0, end = module_protos.size(); i < end; ++i) {
+    const HloModuleProto* proto = module_protos[i];
+    const HloModuleConfig& config = *module_configs[i];
+    TF_ASSIGN_OR_RETURN(
+        auto module, CreateModuleFromProto(*proto, config, run_backend_only));
+    DumpHloModuleIfEnabled(*module, kBeforeOptimizationsDumpName);
+    module_group->push_back(std::move(module));
+  }
+
+  AotCompilationOptions aot_options(backend->compiler()->PlatformId());
+  aot_options.set_executor(executors[0][0]);
+  aot_options.set_device_allocator(options.device_allocator);
+  aot_options.set_run_backend_only(run_backend_only);
+
+  TF_ASSIGN_OR_RETURN(
+      std::vector<std::unique_ptr<AotCompilationResult>> aot_results,
+      backend->compiler()->CompileAheadOfTime(std::move(module_group),
+                                              aot_options));
+  return std::move(aot_results);
 }
 
 StatusOr<std::vector<GlobalDataHandle>>
@@ -368,8 +411,7 @@ Service::ExecuteParallelAndRegisterResult(
       streams.push_back(std::move(stream));
 
       if (replica == 0 && profile != nullptr) {
-        timers.push_back(
-            absl::make_unique<se::Timer>(streams.back()->parent()));
+        timers.push_back(std::make_unique<se::Timer>(streams.back()->parent()));
         streams.back()
             ->InitTimer(timers.back().get())
             .ThenStartTimer(timers.back().get());
@@ -593,6 +635,23 @@ Status Service::ExecuteGraphParallel(const ExecuteGraphParallelRequest* arg,
     TF_ASSIGN_OR_RETURN(auto replicated_arguments,
                         GetArguments(execution_options, request.arguments()));
 
+    for (auto& args : replicated_arguments) {
+      for (auto& arg : args) {
+        auto update_shape_with_empty_tiles = [this](
+                                                 Shape* subshape,
+                                                 const xla::ShapeIndex& index) {
+          if (subshape->IsArray() && subshape->layout().tiles().empty()) {
+            *subshape =
+                execute_backend_->transfer_manager()->HostShapeToDeviceShape(
+                    *subshape);
+          }
+        };
+        ShapeUtil::ForEachMutableSubshape(
+            const_cast<Shape*>(&arg->on_device_shape()),
+            update_shape_with_empty_tiles);
+      }
+    }
+
     // Create an HloModuleConfig object for the computation, given the shape of
     // the program and the argument allocations. Here, we care only about the
     // shapes of the arguments, so, it is sufficient to use the arguments of
@@ -660,7 +719,7 @@ Status Service::ExecuteGraphParallel(const ExecuteGraphParallelRequest* arg,
   // basically the same thing.
   ExecutionProfile profile;
   std::vector<GlobalDataHandle> outputs;
-  Status execution_status = Status::OK();
+  Status execution_status = OkStatus();
 
   if (executable_ptrs.size() == 1) {
     StatusOr<GlobalDataHandle> output_or_status = ExecuteAndRegisterResult(
@@ -715,7 +774,7 @@ Status Service::ExecuteGraphParallel(const ExecuteGraphParallelRequest* arg,
   }
 
   VLOG(1) << "successfully completed 'execute-graph-parallel' request";
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::GetDeviceHandles(const GetDeviceHandlesRequest* arg,
@@ -739,7 +798,7 @@ Status Service::GetDeviceHandles(const GetDeviceHandlesRequest* arg,
     *result->add_device_handles() = device_handle;
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 StatusOr<std::unique_ptr<Executable>> Service::BuildExecutable(
@@ -754,6 +813,9 @@ StatusOr<std::unique_ptr<Executable>> Service::BuildExecutable(
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<HloModule> module,
       CreateModuleFromProto(module_proto, *module_config, run_backend_only));
+  UpdateEntryComputationLayout(
+      module.get(), std::bind(&Compiler::DefaultDeviceShapeRepresentation,
+                              backend->compiler(), std::placeholders::_1));
   DumpHloModuleIfEnabled(*module, kBeforeOptimizationsDumpName);
 
   if (!run_backend_only) {
@@ -806,7 +868,7 @@ Status Service::Compile(const CompileRequest* arg, CompileResponse* result) {
   *result->mutable_handle() = compilation_cache_.Insert(std::move(executable));
 
   VLOG(1) << "successfully completed 'compile' request";
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::Execute(const ExecuteRequest* arg, ExecuteResponse* result) {
@@ -836,7 +898,7 @@ Status Service::Execute(const ExecuteRequest* arg, ExecuteResponse* result) {
     const Shape& shape_module =
         executable->module_config().entry_computation_layout().parameter_shape(
             i);
-    const Shape& shape_arg = replicated_arguments.front()[i]->on_host_shape();
+    const Shape& shape_arg = replicated_arguments.front()[i]->on_device_shape();
     if (!ShapeUtil::Equal(shape_module, shape_arg)) {
       return InvalidArgumentStrCat(
           "The executable expects the ", i, "th argument in shape ",
@@ -876,7 +938,7 @@ Status Service::Execute(const ExecuteRequest* arg, ExecuteResponse* result) {
   }
 
   VLOG(1) << "successfully completed 'execute' request";
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::WaitForExecution(const WaitForExecutionRequest* arg,
@@ -891,7 +953,7 @@ Status Service::WaitForExecution(const WaitForExecutionRequest* arg,
 
   TF_RETURN_IF_ERROR(execution_tracker_.Unregister(arg->execution()));
   VLOG(1) << "successfully completed 'wait-for-execution' request";
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::TransferToClient(const TransferToClientRequest* arg,
@@ -906,7 +968,7 @@ Status Service::TransferToClient(const TransferToClientRequest* arg,
       return InvalidArgument("shape_with_layout must have layout if present.");
     }
   } else {
-    return_shape = Shape(shaped_buffer->on_host_shape());
+    return_shape = Shape(shaped_buffer->on_device_shape());
   }
 
   TF_ASSIGN_OR_RETURN(auto stream, execute_backend_->BorrowStream(
@@ -923,7 +985,7 @@ Status Service::TransferToClient(const TransferToClientRequest* arg,
     *result->mutable_literal() =
         result_literal.Relayout(return_shape).ToProto();
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::TransferToServer(const TransferToServerRequest* arg,
@@ -945,11 +1007,15 @@ Status Service::TransferToServer(const TransferToServerRequest* arg,
   std::vector<ScopedShapedBuffer> replicated_buffers;
   replicated_buffers.reserve(replicas.size());
   for (se::StreamExecutor* executor : replicas) {
+    auto device_shape_representation_fn = [this](const Shape& shape) {
+      return execute_backend_->compiler()->DefaultDeviceShapeRepresentation(
+          shape);
+    };
     TF_ASSIGN_OR_RETURN(
         ScopedShapedBuffer shaped_buffer,
         execute_backend_->transfer_manager()->AllocateScopedShapedBuffer(
             shape, execute_backend_->memory_allocator(),
-            executor->device_ordinal()));
+            executor->device_ordinal(), device_shape_representation_fn));
     TF_ASSIGN_OR_RETURN(auto stream, execute_backend_->BorrowStream(executor));
     TF_RETURN_IF_ERROR(
         execute_backend_->transfer_manager()->TransferLiteralToDevice(
@@ -962,7 +1028,7 @@ Status Service::TransferToServer(const TransferToServerRequest* arg,
                           StrCat("TransferToServer literal of shape ",
                                  ShapeUtil::HumanString(shape))));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::TransferToInfeed(const TransferToInfeedRequest* arg,
@@ -1021,7 +1087,7 @@ Status Service::TransferFromOutfeed(const TransferFromOutfeedRequest* arg,
       execute_backend_->transfer_manager()->TransferLiteralFromOutfeed(
           executor, &literal));
   *result->mutable_literal() = literal.ToProto();
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::ResetDevice(const ResetDeviceRequest* arg,
@@ -1044,7 +1110,7 @@ Status Service::ComputeConstantGraph(const ComputeConstantGraphRequest* arg,
 
   ProgramShape program_shape(arg->computation().host_program_shape());
   TF_DCHECK_OK(ShapeUtil::ValidateShape(program_shape.result()));
-  absl::optional<Layout> output_layout;
+  std::optional<Layout> output_layout;
   if (arg->has_output_layout()) {
     output_layout = Layout::CreateFromProto(arg->output_layout());
     TF_RETURN_IF_ERROR(LayoutUtil::ValidateLayoutForShape(
@@ -1088,14 +1154,14 @@ Status Service::ComputeConstantGraph(const ComputeConstantGraphRequest* arg,
   }
   *result->mutable_literal() = result_literal.ToProto();
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Service::GetShape(const GetShapeRequest* arg, GetShapeResponse* result) {
   TF_ASSIGN_OR_RETURN(const ShapedBuffer* buffer,
                       allocation_tracker_.ResolveForReplica(arg->data(), 0));
-  *result->mutable_shape() = buffer->on_host_shape().ToProto();
-  return Status::OK();
+  *result->mutable_shape() = buffer->on_device_shape().ToProto();
+  return OkStatus();
 }
 
 Status Service::GetComputationGraphStats(
@@ -1111,6 +1177,10 @@ Status Service::GetComputationGraphStats(
   config.set_debug_options(arg->debug_options());
   TF_ASSIGN_OR_RETURN(std::unique_ptr<HloModule> module,
                       CreateModuleFromProto(arg->computation(), config));
+  UpdateEntryComputationLayout(
+      module.get(),
+      std::bind(&Compiler::DefaultDeviceShapeRepresentation,
+                execute_backend_->compiler(), std::placeholders::_1));
   DumpHloModuleIfEnabled(*module, kBeforeOptimizationsDumpName);
 
   // Run HLO analysis to get the computation statistics.
@@ -1123,7 +1193,7 @@ Status Service::GetComputationGraphStats(
   stats.set_flop_count(analysis.flop_count());
   stats.set_transcendental_count(analysis.transcendental_count());
   *result->mutable_stats() = stats;
-  return Status::OK();
+  return OkStatus();
 }
 
 DeviceHandle Service::SingleComputationDeviceHandle() const {

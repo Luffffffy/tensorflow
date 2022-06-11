@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_CLIENT_XLA_BUILDER_H_
 #define TENSORFLOW_COMPILER_XLA_CLIENT_XLA_BUILDER_H_
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
@@ -40,7 +41,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/stacktrace.h"
 
 namespace xla {
@@ -52,6 +52,9 @@ class HloInstruction;
 namespace internal {
 
 struct XlaBuilderFriend {
+  static XlaOp BuildAddDependency(XlaBuilder* builder, XlaOp operand,
+                                  XlaOp token, const Shape& shape);
+
   static XlaOp BuildFusion(XlaBuilder* builder,
                            absl::Span<const XlaOp> operands,
                            absl::string_view fusion_kind,
@@ -60,7 +63,14 @@ struct XlaBuilderFriend {
   static XlaOp BuildBitcast(XlaBuilder* builder, XlaOp operand,
                             const Shape& shape);
 
+  static XlaOp BuildPartitionId(XlaBuilder* builder, const Shape& shape);
+
+  static XlaOp BuildRngGetAndUpdateState(XlaBuilder* builder, int64_t delta,
+                                         const Shape& shape);
+
   static HloInstructionProto* GetInstruction(XlaOp op);
+  static HloInstructionProto* GetInstructionByHandle(XlaBuilder* builder,
+                                                     int64_t handle);
 };
 
 }  // namespace internal
@@ -225,10 +235,10 @@ class XlaBuilder {
 
   // Clears the sharding. Ops will be sharded according to the default placement
   // policy.
-  void ClearSharding() { sharding_ = absl::nullopt; }
+  void ClearSharding() { sharding_ = std::nullopt; }
 
   // Returns the OpSharding that will be attached to all instructions.
-  const absl::optional<OpSharding>& sharding() const { return sharding_; }
+  const std::optional<OpSharding>& sharding() const { return sharding_; }
 
   // Sets the builder to a mode where it will die immediately when an error is
   // encountered, rather than producing it in a deferred fashion when Build() is
@@ -492,8 +502,6 @@ class XlaBuilder {
                                               absl::Span<const XlaOp> operands,
                                               int64_t dimension);
 
-  void Trace(const std::string& tag, XlaOp operand);
-
   XlaOp Select(XlaOp pred, XlaOp on_true, XlaOp on_false);
 
   XlaOp Tuple(absl::Span<const XlaOp> elements);
@@ -505,35 +513,35 @@ class XlaBuilder {
                                                   XlaOp tuple_data,
                                                   int64_t index);
 
-  XlaOp Dot(
-      XlaOp lhs, XlaOp rhs, const PrecisionConfig* precision_config = nullptr,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+  XlaOp Dot(XlaOp lhs, XlaOp rhs,
+            const PrecisionConfig* precision_config = nullptr,
+            std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   XlaOp DotGeneral(
       XlaOp lhs, XlaOp rhs, const DotDimensionNumbers& dimension_numbers,
       const PrecisionConfig* precision_config = nullptr,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   XlaOp Conv(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
       Padding padding, int64_t feature_group_count = 1,
       int64_t batch_group_count = 1,
       const PrecisionConfig* precision_config = nullptr,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   XlaOp ConvWithGeneralPadding(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
       absl::Span<const std::pair<int64_t, int64_t>> padding,
       int64_t feature_group_count = 1, int64_t batch_group_count = 1,
       const PrecisionConfig* precision_config = nullptr,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   XlaOp ConvWithGeneralDimensions(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
       Padding padding, const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count = 1, int64_t batch_group_count = 1,
       const PrecisionConfig* precision_config = nullptr,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   XlaOp ConvGeneral(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
@@ -541,7 +549,7 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count = 1, int64_t batch_group_count = 1,
       const PrecisionConfig* precision_config = nullptr,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   XlaOp ConvGeneralDilated(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
@@ -551,7 +559,8 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count = 1, int64_t batch_group_count = 1,
       const PrecisionConfig* precision_config = nullptr,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt,
+      std::optional<std::vector<bool>> window_reversal = std::nullopt);
 
   XlaOp DynamicConvForward(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
@@ -561,7 +570,7 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config, PaddingType padding_type,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   XlaOp DynamicConvInputGrad(
       XlaOp input_sizes, XlaOp lhs, XlaOp rhs,
@@ -572,7 +581,7 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config, PaddingType padding_type,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   XlaOp DynamicConvKernelGrad(
       XlaOp activations, XlaOp gradients,
@@ -583,7 +592,7 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config, PaddingType padding_type,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   StatusOr<HloInstructionProto> DynamicConvInstruction(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
@@ -593,7 +602,7 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config, PaddingType padding_type,
-      absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+      std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
   virtual StatusOr<XlaOp> ConvGeneralDilatedInternal(
       const Shape& shape, XlaOp lhs, XlaOp rhs, const Window& window,
@@ -638,12 +647,12 @@ class XlaBuilder {
   XlaOp CustomCall(
       const std::string& call_target_name, absl::Span<const XlaOp> operands,
       const Shape& shape_with_layout, const std::string& opaque,
-      absl::optional<absl::Span<const Shape>> operand_shapes_with_layout,
+      std::optional<absl::Span<const Shape>> operand_shapes_with_layout,
       bool has_side_effect,
       absl::Span<const std::pair<ShapeIndex, std::pair<int64_t, ShapeIndex>>>
           output_operand_aliasing,
-      const Literal* literal, absl::optional<Window> window,
-      absl::optional<ConvolutionDimensionNumbers> dnums,
+      const Literal* literal, std::optional<Window> window,
+      std::optional<ConvolutionDimensionNumbers> dnums,
       CustomCallSchedule schedule, CustomCallApiVersion api_version);
 
   // Internal version of CustomCall without computation that doesn't do op
@@ -652,19 +661,19 @@ class XlaBuilder {
   virtual StatusOr<XlaOp> CustomCallInternal(
       const std::string& call_target_name, absl::Span<const XlaOp> operands,
       const Shape& shape_with_layout, const std::string& opaque,
-      absl::optional<absl::Span<const Shape>> operand_shapes_with_layout,
+      std::optional<absl::Span<const Shape>> operand_shapes_with_layout,
       bool has_side_effect,
       absl::Span<const std::pair<ShapeIndex, std::pair<int64_t, ShapeIndex>>>
           output_operand_aliasing,
-      const Literal* literal, absl::optional<Window> window,
-      absl::optional<ConvolutionDimensionNumbers> dnums,
+      const Literal* literal, std::optional<Window> window,
+      std::optional<ConvolutionDimensionNumbers> dnums,
       CustomCallSchedule schedule, CustomCallApiVersion api_version);
 
   XlaOp CustomCall(
       const std::string& call_target_name, absl::Span<const XlaOp> operands,
       const XlaComputation& computation, const Shape& shape_with_layout,
       const std::string& opaque,
-      absl::optional<absl::Span<const Shape>> operand_shapes_with_layout,
+      std::optional<absl::Span<const Shape>> operand_shapes_with_layout,
       bool has_side_effect,
       absl::Span<const std::pair<ShapeIndex, std::pair<int64_t, ShapeIndex>>>
           output_operand_aliasing,
@@ -726,33 +735,38 @@ class XlaBuilder {
   XlaOp AllGather(
       XlaOp operand, int64_t all_gather_dimension, int64_t shard_count,
       absl::Span<const ReplicaGroup> replica_groups = {},
-      const absl::optional<ChannelHandle>& channel_id = absl::nullopt,
-      const absl::optional<Layout>& layout = absl::nullopt,
-      const absl::optional<bool> use_global_device_ids = absl::nullopt);
+      const std::optional<ChannelHandle>& channel_id = std::nullopt,
+      const std::optional<Layout>& layout = std::nullopt,
+      const std::optional<bool> use_global_device_ids = std::nullopt);
 
-  XlaOp AllReduce(
-      XlaOp operand, const XlaComputation& computation,
-      absl::Span<const ReplicaGroup> replica_groups = {},
-      const absl::optional<ChannelHandle>& channel_id = absl::nullopt,
-      const absl::optional<Shape>& shape_with_layout = absl::nullopt);
+  XlaOp AllReduce(XlaOp operand, const XlaComputation& computation,
+                  absl::Span<const ReplicaGroup> replica_groups = {},
+                  const std::optional<ChannelHandle>& channel_id = std::nullopt,
+                  const std::optional<Shape>& shape_with_layout = std::nullopt);
 
   XlaOp ReduceScatter(
       XlaOp operand, const XlaComputation& computation,
       int64_t scatter_dimension, int64_t shard_count,
       absl::Span<const ReplicaGroup> replica_groups = {},
-      const absl::optional<ChannelHandle>& channel_id = absl::nullopt,
-      const absl::optional<Layout>& layout = absl::nullopt,
-      const absl::optional<bool> use_global_device_ids = absl::nullopt);
+      const std::optional<ChannelHandle>& channel_id = std::nullopt,
+      const std::optional<Layout>& layout = std::nullopt,
+      const std::optional<bool> use_global_device_ids = std::nullopt);
 
+  // TODO(b/219961627): Allow the replica_groups to be inferred (one group
+  // containing all replicas).
   XlaOp AllToAll(XlaOp operand, int64_t split_dimension,
                  int64_t concat_dimension, int64_t split_count,
                  absl::Span<const ReplicaGroup> replica_groups,
-                 const absl::optional<Layout>& layout = absl::nullopt);
+                 const std::optional<Layout>& layout = std::nullopt);
+
+  XlaOp AllToAllTuple(absl::Span<const XlaOp> operands,
+                      absl::Span<const ReplicaGroup> replica_groups,
+                      const std::optional<Layout>& layout);
 
   XlaOp AllToAllTuple(XlaOp operand, int64_t split_dimension,
                       int64_t concat_dimension, int64_t split_count,
                       absl::Span<const ReplicaGroup> replica_groups,
-                      const absl::optional<Layout>& layout);
+                      const std::optional<Layout>& layout);
 
   XlaOp CollectivePermute(
       XlaOp operand,
@@ -858,10 +872,15 @@ class XlaBuilder {
                 const XlaComputation& update_computation,
                 const ScatterDimensionNumbers& dimension_numbers,
                 bool indices_are_sorted = false, bool unique_indices = false);
+  XlaOp Scatter(absl::Span<const XlaOp> inputs, XlaOp scatter_indices,
+                absl::Span<const XlaOp> updates,
+                const XlaComputation& update_computation,
+                const ScatterDimensionNumbers& dimension_numbers,
+                bool indices_are_sorted = false, bool unique_indices = false);
 
   virtual StatusOr<XlaOp> ScatterInternal(
-      const Shape& shape, XlaOp input, XlaOp scatter_indices, XlaOp updates,
-      const XlaComputation& update_computation,
+      const Shape& shape, absl::Span<const XlaOp> inputs, XlaOp scatter_indices,
+      absl::Span<const XlaOp> updates, const XlaComputation& update_computation,
       const ScatterDimensionNumbers& dimension_numbers, bool indices_are_sorted,
       bool unique_indices);
 
@@ -930,8 +949,8 @@ class XlaBuilder {
   // only used if opcode is kCompare.
   XlaOp BinaryOp(HloOpcode binop, XlaOp lhs, XlaOp rhs,
                  absl::Span<const int64_t> broadcast_dimensions,
-                 absl::optional<ComparisonDirection> direction = absl::nullopt,
-                 absl::optional<Comparison::Type> type = absl::nullopt);
+                 std::optional<ComparisonDirection> direction = std::nullopt,
+                 std::optional<Comparison::Type> type = std::nullopt);
 
   StatusOr<XlaOp> Compare(const Shape& shape, XlaOp lhs, XlaOp rhs,
                           ComparisonDirection direction);
@@ -1049,11 +1068,11 @@ class XlaBuilder {
   OpMetadata metadata_;
 
   // A temporary metadata that will only be applied to the next op created.
-  absl::optional<OpMetadata> one_shot_metadata_;
+  std::optional<OpMetadata> one_shot_metadata_;
 
   // Sharding for this operator. This is structured as a "model"-like operation,
   // in order to simplify client code, similar to metadata_.
-  absl::optional<OpSharding> sharding_;
+  std::optional<OpSharding> sharding_;
 
   // Mode bit that indicates whether to die when a first error is encountered.
   bool die_immediately_on_error_ = false;
@@ -1117,8 +1136,6 @@ class XlaBuilder {
   friend XlaOp ConcatInDim(XlaBuilder* builder,
                            absl::Span<const XlaOp> operands, int64_t dimension);
 
-  friend void Trace(const std::string& tag, XlaOp operand);
-
   friend XlaOp Select(XlaOp pred, XlaOp on_true, XlaOp on_false);
   friend XlaOp Tuple(XlaBuilder* builder, absl::Span<const XlaOp> elements);
   friend XlaOp GetTupleElement(XlaOp tuple_data, int64_t index);
@@ -1131,11 +1148,11 @@ class XlaBuilder {
                        Comparison::Type compare_type);
   friend XlaOp Dot(XlaOp lhs, XlaOp rhs,
                    const PrecisionConfig* precision_config,
-                   absl::optional<PrimitiveType> preferred_element_type);
+                   std::optional<PrimitiveType> preferred_element_type);
   friend XlaOp DotGeneral(XlaOp lhs, XlaOp rhs,
                           const DotDimensionNumbers& dimension_number,
                           const PrecisionConfig* precision_config,
-                          absl::optional<PrimitiveType> preferred_element_type);
+                          std::optional<PrimitiveType> preferred_element_type);
   virtual StatusOr<XlaOp> DotGeneralInternal(
       const Shape& shape, XlaOp lhs, XlaOp rhs,
       const DotDimensionNumbers& dimension_number,
@@ -1144,26 +1161,26 @@ class XlaBuilder {
                     absl::Span<const int64_t> window_strides, Padding padding,
                     int64_t feature_group_count, int64_t batch_group_count,
                     const PrecisionConfig* precision_config,
-                    absl::optional<PrimitiveType> preferred_element_type);
+                    std::optional<PrimitiveType> preferred_element_type);
   friend XlaOp ConvWithGeneralPadding(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
       absl::Span<const std::pair<int64_t, int64_t>> padding,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config,
-      absl::optional<PrimitiveType> preferred_element_type);
+      std::optional<PrimitiveType> preferred_element_type);
   friend XlaOp ConvWithGeneralDimensions(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
       Padding padding, const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config,
-      absl::optional<PrimitiveType> preferred_element_type);
+      std::optional<PrimitiveType> preferred_element_type);
   friend XlaOp ConvGeneral(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
       absl::Span<const std::pair<int64_t, int64_t>> padding,
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config,
-      absl::optional<PrimitiveType> preferred_element_type);
+      std::optional<PrimitiveType> preferred_element_type);
   friend XlaOp DynamicConvForward(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
       absl::Span<const std::pair<int64_t, int64_t>> padding,
@@ -1172,7 +1189,7 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config, PaddingType padding_type,
-      absl::optional<PrimitiveType> preferred_element_type);
+      std::optional<PrimitiveType> preferred_element_type);
   friend XlaOp DynamicConvKernelGrad(
       XlaOp activations, XlaOp gradients,
       absl::Span<const int64_t> window_strides,
@@ -1182,7 +1199,7 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config, PaddingType padding_type,
-      absl::optional<PrimitiveType> preferred_element_type);
+      std::optional<PrimitiveType> preferred_element_type);
   friend XlaOp DynamicConvInputGrad(
       XlaOp input_sizes, XlaOp lhs, XlaOp rhs,
       absl::Span<const int64_t> window_strides,
@@ -1192,7 +1209,7 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config, PaddingType padding_type,
-      absl::optional<PrimitiveType> preferred_element_type);
+      std::optional<PrimitiveType> preferred_element_type);
 
   friend XlaOp ConvKernelGrad(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
@@ -1202,7 +1219,7 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config,
-      absl::optional<PrimitiveType> preferred_element_type);
+      std::optional<PrimitiveType> preferred_element_type);
 
   friend XlaOp ConvGeneralDilated(
       XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
@@ -1212,7 +1229,9 @@ class XlaBuilder {
       const ConvolutionDimensionNumbers& dimension_numbers,
       int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config,
-      absl::optional<PrimitiveType> preferred_element_type);
+      std::optional<PrimitiveType> preferred_element_type,
+      std::optional<std::vector<bool>> window_reversal);
+
   friend XlaOp Fft(XlaOp operand, FftType fft_type,
                    absl::Span<const int64_t> fft_length);
   friend XlaOp TriangularSolve(XlaOp a, XlaOp b, bool left_side, bool lower,
@@ -1332,28 +1351,31 @@ class XlaBuilder {
   friend XlaOp AllGather(XlaOp operand, int64_t all_gather_dimension,
                          int64_t shard_count,
                          absl::Span<const ReplicaGroup> replica_groups,
-                         const absl::optional<ChannelHandle>& channel_id,
-                         const absl::optional<Layout>& layout,
-                         const absl::optional<bool> use_global_device_ids);
+                         const std::optional<ChannelHandle>& channel_id,
+                         const std::optional<Layout>& layout,
+                         const std::optional<bool> use_global_device_ids);
   friend XlaOp AllReduce(XlaOp operand, const XlaComputation& computation,
                          absl::Span<const ReplicaGroup> replica_groups,
-                         const absl::optional<ChannelHandle>& channel_id,
-                         const absl::optional<Shape>& shape_with_layout);
+                         const std::optional<ChannelHandle>& channel_id,
+                         const std::optional<Shape>& shape_with_layout);
   friend XlaOp ReduceScatter(XlaOp operand, const XlaComputation& computation,
                              int64_t scatter_dimension, int64_t shard_count,
                              absl::Span<const ReplicaGroup> replica_groups,
-                             const absl::optional<ChannelHandle>& channel_id,
-                             const absl::optional<Layout>& layout,
-                             const absl::optional<bool> use_global_device_ids);
+                             const std::optional<ChannelHandle>& channel_id,
+                             const std::optional<Layout>& layout,
+                             const std::optional<bool> use_global_device_ids);
 
   friend XlaOp AllToAll(XlaOp operand, int64_t split_dimension,
                         int64_t concat_dimension, int64_t split_count,
                         absl::Span<const ReplicaGroup> replica_groups,
-                        const absl::optional<Layout>& layout);
+                        const std::optional<Layout>& layout);
+  friend XlaOp AllToAllTuple(absl::Span<const XlaOp> operands,
+                             absl::Span<const ReplicaGroup> replica_groups,
+                             const std::optional<Layout>& layout);
   friend XlaOp AllToAllTuple(XlaOp operand, int64_t split_dimension,
                              int64_t concat_dimension, int64_t split_count,
                              absl::Span<const ReplicaGroup> replica_groups,
-                             const absl::optional<Layout>& layout);
+                             const std::optional<Layout>& layout);
   friend XlaOp CollectivePermute(
       XlaOp operand,
       const std::vector<std::pair<int64_t, int64_t>>& source_target_pairs);
@@ -1436,6 +1458,11 @@ class XlaBuilder {
                       absl::Span<const int64_t> slice_sizes,
                       bool indices_are_sorted);
   friend XlaOp Scatter(XlaOp input, XlaOp scatter_indices, XlaOp updates,
+                       const XlaComputation& update_computation,
+                       const ScatterDimensionNumbers& dimension_numbers,
+                       bool indices_are_sorted, bool unique_indices);
+  friend XlaOp Scatter(absl::Span<const XlaOp> inputs, XlaOp scatter_indices,
+                       absl::Span<const XlaOp> updates,
                        const XlaComputation& update_computation,
                        const ScatterDimensionNumbers& dimension_numbers,
                        bool indices_are_sorted, bool unique_indices);
@@ -1532,7 +1559,7 @@ class XlaBuilder {
 class XlaScopedShardingAssignment {
  public:
   XlaScopedShardingAssignment(xla::XlaBuilder* builder,
-                              absl::optional<OpSharding> sharding)
+                              std::optional<OpSharding> sharding)
       : builder_(builder), prev_sharding_(builder->sharding()) {
     SetSharding(sharding);
   }
@@ -1544,7 +1571,7 @@ class XlaScopedShardingAssignment {
   ~XlaScopedShardingAssignment() { SetSharding(prev_sharding_); }
 
  private:
-  void SetSharding(const absl::optional<OpSharding>& sharding) {
+  void SetSharding(const std::optional<OpSharding>& sharding) {
     if (sharding.has_value()) {
       builder_->SetSharding(sharding.value());
     } else {
@@ -1553,7 +1580,7 @@ class XlaScopedShardingAssignment {
   }
 
   xla::XlaBuilder* const builder_;
-  absl::optional<OpSharding> prev_sharding_;
+  std::optional<OpSharding> prev_sharding_;
 };
 
 // RAII-style object: save the current builder's frontend attributes, and merge
@@ -1851,10 +1878,6 @@ XlaOp DynamicUpdateSlice(XlaOp operand, XlaOp update,
 XlaOp ConcatInDim(XlaBuilder* builder, absl::Span<const XlaOp> operands,
                   int64_t dimension);
 
-// Enqueue a tracing operation onto the computation; the computation will emit
-// a logging message with the operand.
-void Trace(const std::string& tag, XlaOp operand);
-
 // Enqueues a conditional-move-like select operation onto the computation;
 // predicated on pred, selects between on_true and on_false.
 XlaOp Select(XlaOp pred, XlaOp on_true, XlaOp on_false);
@@ -1914,22 +1937,21 @@ XlaOp Compare(XlaOp lhs, XlaOp rhs, ComparisonDirection direction);
 // Enqueues a dot instruction onto the computation.
 XlaOp Dot(XlaOp lhs, XlaOp rhs,
           const PrecisionConfig* precision_config = nullptr,
-          absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+          std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
 // Enqueues a general dot instruction onto the computation.
 XlaOp DotGeneral(
     XlaOp lhs, XlaOp rhs, const DotDimensionNumbers& dimension_numbers,
     const PrecisionConfig* precision_config = nullptr,
-    absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+    std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
 // Enqueues a convolution instruction onto the computation, which uses the
 // default convolution dimension numbers.
-XlaOp Conv(
-    XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
-    Padding padding, int64_t feature_group_count = 1,
-    int64_t batch_group_count = 1,
-    const PrecisionConfig* precision_config = nullptr,
-    absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+XlaOp Conv(XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
+           Padding padding, int64_t feature_group_count = 1,
+           int64_t batch_group_count = 1,
+           const PrecisionConfig* precision_config = nullptr,
+           std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
 // Enqueues a convolution instruction onto the computation, with the caller
 // provided padding configuration in the format returned by MakePadding().
@@ -1938,7 +1960,7 @@ XlaOp ConvWithGeneralPadding(
     absl::Span<const std::pair<int64_t, int64_t>> padding,
     int64_t feature_group_count = 1, int64_t batch_group_count = 1,
     const PrecisionConfig* precision_config = nullptr,
-    absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+    std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
 // Enqueues a convolution instruction onto the computation, with the caller
 // provided dimension numbers configuration.
@@ -1947,7 +1969,7 @@ XlaOp ConvWithGeneralDimensions(
     Padding padding, const ConvolutionDimensionNumbers& dimension_numbers,
     int64_t feature_group_count = 1, int64_t batch_group_count = 1,
     const PrecisionConfig* precision_config = nullptr,
-    absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+    std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
 // Enqueues a convolution instruction onto the computation, with the caller
 // provided padding configuration as well as the dimension numbers.
@@ -1957,7 +1979,7 @@ XlaOp ConvGeneral(
     const ConvolutionDimensionNumbers& dimension_numbers,
     int64_t feature_group_count = 1, int64_t batch_group_count = 1,
     const PrecisionConfig* precision_config = nullptr,
-    absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+    std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
 // Enqueues a convolution instruction onto the computation, with the caller
 // provided padding configuration, dilation factors and dimension numbers.
@@ -1969,7 +1991,8 @@ XlaOp ConvGeneralDilated(
     const ConvolutionDimensionNumbers& dimension_numbers,
     int64_t feature_group_count = 1, int64_t batch_group_count = 1,
     const PrecisionConfig* precision_config = nullptr,
-    absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+    std::optional<PrimitiveType> preferred_element_type = std::nullopt,
+    std::optional<std::vector<bool>> window_reversal = std::nullopt);
 
 XlaOp DynamicConvForward(
     XlaOp lhs, XlaOp rhs, absl::Span<const int64_t> window_strides,
@@ -1979,7 +2002,7 @@ XlaOp DynamicConvForward(
     const ConvolutionDimensionNumbers& dimension_numbers,
     int64_t feature_group_count, int64_t batch_group_count,
     const PrecisionConfig* precision_config, PaddingType padding_type,
-    absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+    std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
 XlaOp DynamicConvInputGrad(
     XlaOp input_sizes, XlaOp lhs, XlaOp rhs,
@@ -1990,7 +2013,7 @@ XlaOp DynamicConvInputGrad(
     const ConvolutionDimensionNumbers& dimension_numbers,
     int64_t feature_group_count, int64_t batch_group_count,
     const PrecisionConfig* precision_config, PaddingType padding_type,
-    absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+    std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
 XlaOp DynamicConvKernelGrad(
     XlaOp activations, XlaOp gradients,
@@ -2001,7 +2024,7 @@ XlaOp DynamicConvKernelGrad(
     const ConvolutionDimensionNumbers& dimension_numbers,
     int64_t feature_group_count, int64_t batch_group_count,
     const PrecisionConfig* precision_config, PaddingType padding_type,
-    absl::optional<PrimitiveType> preferred_element_type = absl::nullopt);
+    std::optional<PrimitiveType> preferred_element_type = std::nullopt);
 
 // Enqueues an FFT instruction onto the computation, of the given type and
 // with the given FFT length.
@@ -2285,12 +2308,12 @@ XlaOp ReduceWindowWithGeneralPadding(
 XlaOp CrossReplicaSum(XlaOp operand,
                       absl::Span<const ReplicaGroup> replica_groups = {});
 
-XlaOp AllGather(
-    XlaOp operand, int64_t all_gather_dimension, int64_t shard_count,
-    absl::Span<const ReplicaGroup> replica_groups = {},
-    const absl::optional<ChannelHandle>& channel_id = absl::nullopt,
-    const absl::optional<Layout>& layout = absl::nullopt,
-    const absl::optional<bool> use_global_device_ids = absl::nullopt);
+XlaOp AllGather(XlaOp operand, int64_t all_gather_dimension,
+                int64_t shard_count,
+                absl::Span<const ReplicaGroup> replica_groups = {},
+                const std::optional<ChannelHandle>& channel_id = std::nullopt,
+                const std::optional<Layout>& layout = std::nullopt,
+                const std::optional<bool> use_global_device_ids = std::nullopt);
 
 // Enqueues an operation that do an AllReduce of the operand cross cores. Here
 // AllReduce means doing a reduction on the input operand cross cores and then
@@ -2313,15 +2336,15 @@ XlaOp AllGather(
 // ops compiled separately.
 XlaOp AllReduce(XlaOp operand, const XlaComputation& computation,
                 absl::Span<const ReplicaGroup> replica_groups = {},
-                const absl::optional<ChannelHandle>& channel_id = absl::nullopt,
-                const absl::optional<Shape>& shape_with_layout = absl::nullopt);
+                const std::optional<ChannelHandle>& channel_id = std::nullopt,
+                const std::optional<Shape>& shape_with_layout = std::nullopt);
 
 XlaOp ReduceScatter(
     XlaOp operand, const XlaComputation& computation, int64_t scatter_dimension,
     int64_t shard_count, absl::Span<const ReplicaGroup> replica_groups = {},
-    const absl::optional<ChannelHandle>& channel_id = absl::nullopt,
-    const absl::optional<Layout>& layout = absl::nullopt,
-    const absl::optional<bool> use_global_device_ids = absl::nullopt);
+    const std::optional<ChannelHandle>& channel_id = std::nullopt,
+    const std::optional<Layout>& layout = std::nullopt,
+    const std::optional<bool> use_global_device_ids = std::nullopt);
 
 // Enqueues an operation that do an Alltoall of the operand cross cores.
 // An optional `layout` can be specified to force the layout of the instruction.
@@ -2330,12 +2353,16 @@ XlaOp ReduceScatter(
 XlaOp AllToAll(XlaOp operand, int64_t split_dimension, int64_t concat_dimension,
                int64_t split_count,
                absl::Span<const ReplicaGroup> replica_groups = {},
-               const absl::optional<Layout>& layout = absl::nullopt);
+               const std::optional<Layout>& layout = std::nullopt);
+
+XlaOp AllToAllTuple(absl::Span<const XlaOp> operand,
+                    absl::Span<const ReplicaGroup> replica_groups = {},
+                    const std::optional<Layout>& layout = std::nullopt);
 
 XlaOp AllToAllTuple(XlaOp operand, int64_t split_dimension,
                     int64_t concat_dimension, int64_t split_count,
                     absl::Span<const ReplicaGroup> replica_groups = {},
-                    const absl::optional<Layout>& layout = absl::nullopt);
+                    const std::optional<Layout>& layout = std::nullopt);
 
 // Enqueues an collective operation that sends and receives data cross replicas.
 //
@@ -2553,6 +2580,11 @@ XlaOp Gather(XlaOp input, XlaOp start_indices,
 
 // Enqueues a Scatter node onto the computation.
 XlaOp Scatter(XlaOp input, XlaOp scatter_indices, XlaOp updates,
+              const XlaComputation& update_computation,
+              const ScatterDimensionNumbers& dimension_numbers,
+              bool indices_are_sorted = false, bool unique_indices = false);
+XlaOp Scatter(absl::Span<const XlaOp> inputs, XlaOp scatter_indices,
+              absl::Span<const XlaOp> updates,
               const XlaComputation& update_computation,
               const ScatterDimensionNumbers& dimension_numbers,
               bool indices_are_sorted = false, bool unique_indices = false);

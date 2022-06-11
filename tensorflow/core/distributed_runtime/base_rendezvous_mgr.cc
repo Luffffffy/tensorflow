@@ -18,6 +18,7 @@ limitations under the License.
 #include <unordered_set>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
 #include "tensorflow/core/common_runtime/copy_tensor.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
@@ -155,7 +156,7 @@ Status BaseRemoteRendezvous::Initialize(WorkerSession* session) {
     if (session_ != nullptr) {
       if (session_->worker_name() == session->worker_name()) {
         VLOG(1) << "Skipping rendezvous re-initialization.";
-        return Status::OK();
+        return OkStatus();
       }
       Status s = errors::Internal(
           "Double init! Worker names would have changed from: ",
@@ -169,7 +170,7 @@ Status BaseRemoteRendezvous::Initialize(WorkerSession* session) {
   for (auto& call : deferred_calls) {
     RecvLocalAsyncInternal(call.parsed, std::move(call.done));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 WorkerSession* BaseRemoteRendezvous::session() {
@@ -227,7 +228,7 @@ Status BaseRemoteRendezvous::ValidateDevices(const ParsedKey& parsed,
         "Invalid rendezvous key (dst): ", parsed.FullKey(), " @ ",
         sess->worker_name());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 void BaseRemoteRendezvous::SameWorkerRecvDone(
@@ -242,7 +243,7 @@ void BaseRemoteRendezvous::SameWorkerRecvDone(
       (recv_args.alloc_attrs.on_host() || parsed.dst.type == "CPU");
   if (src_host && dst_host) {
     *out = in;
-    done(Status::OK());
+    done(OkStatus());
     return;
   }
 
@@ -414,7 +415,8 @@ void BaseRemoteRendezvous::StartAbort(const Status& s) {
       for (auto& call : cm_and_token_and_calls.second.second) {
         call->StartAbort(derived_status);
       }
-      calls_[cm_and_token_and_calls.first].second.clear();
+      auto* cm = cm_and_token_and_calls.first;
+      calls_[cm].second.clear();
     }
     calls_.clear();
   }
@@ -447,6 +449,12 @@ void BaseRemoteRendezvous::RegisterCall(BaseRecvTensorCall* call,
               errors::Cancelled("RecvFromRemoteAsync is cancelled."));
         }
       });
+
+      if (!already_cancelled) {
+        calls_.emplace(
+            cm,
+            std::make_pair(token, absl::flat_hash_set<BaseRecvTensorCall*>{}));
+      }
     }
   }
 
@@ -454,11 +462,6 @@ void BaseRemoteRendezvous::RegisterCall(BaseRecvTensorCall* call,
     call->StartAbort(errors::Cancelled("RecvFromRemoteAsync is cancelled."));
   } else {
     mutex_lock l(calls_mu_);
-    if (calls_.find(cm) == calls_.end()) {
-      calls_.emplace(
-          cm, std::make_pair(
-                  token, std::unordered_set<BaseRecvTensorCall*>{}));  // NOLINT
-    }
     bool emplaced = calls_[cm].second.emplace(call).second;
     CHECK(emplaced);  // Crash OK.
   }

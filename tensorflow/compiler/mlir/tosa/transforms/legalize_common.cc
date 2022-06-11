@@ -1985,7 +1985,7 @@ llvm::Optional<SmallVector<Value>> convertSplitOp(
   RankedTensorType slice_type = slice_value.getType().cast<RankedTensorType>();
   assert((slice_type.getDimSize(axis) % num_split) == 0);
 
-  // Each slice has a different begining point.
+  // Each slice has a different beginning point.
   // The slice size is actually the same each op.
   SmallVector<int64_t> begin_vals, size_vals;
   for (int j = 0, s = slice_type.getRank(); j < s; j++) {
@@ -2060,7 +2060,7 @@ llvm::Optional<SmallVector<Value>> convertSplitVOp(
 
   int32_t curr_split_start = 0;
   for (int i = 0; i < size_split.size(); i++) {
-    // Each slice has a different begining point.
+    // Each slice has a different beginning point.
     // The slice size is different for each op.
     SmallVector<int64_t> begin_vals, size_vals;
 
@@ -2251,7 +2251,11 @@ llvm::Optional<Value> convertStridedSliceOp(
     a1_size[i] = end[i] - begin[i];
 
     // Shrink axis mask means we know the size is 1.
-    if (shrink_axis_mask & (1 << i)) a1_size[i] = 1;
+    // Stride is ignored if shrink axis mask is set.
+    if (shrink_axis_mask & (1 << i)) {
+      a1_size[i] = 1;
+      strides[i] = 1;
+    }
 
     a2_shape[i * 2 + 0] = a1_size[i] / abs(strides[i]);
     a2_shape[i * 2 + 1] = abs(strides[i]);
@@ -2282,8 +2286,12 @@ llvm::Optional<Value> convertStridedSliceOp(
       rewriter.getI64ArrayAttr(a1_begin), rewriter.getI64ArrayAttr(a1_size));
 
   if (all_strides_one) {
-    return reverseNegativeStride(rewriter, op, a1_slice_op.getResult(),
-                                 strides);
+    auto reversed =
+        reverseNegativeStride(rewriter, op, a1_slice_op.getResult(), strides);
+    return CreateOpAndInfer<tosa::ReshapeOp>(rewriter, op->getLoc(),
+                                             result_type, reversed,
+                                             rewriter.getI64ArrayAttr(a4_shape))
+        .getResult();
   }
 
   // Step 2: reshape the sliced array
@@ -2403,27 +2411,37 @@ llvm::Optional<Value> convertFusedActivation(PatternRewriter& rewriter,
 
       return clamp_op.getResult();
     } else if (fused_activation_fn.getValue() == "RELU6") {
-      int32_t quantized_0 = input_qtype.getZeroPoint();
-      int32_t quantized_6 = std::llround((6.0f / input_qtype.getScale()) +
+      int64_t quantized_0 = input_qtype.getZeroPoint();
+      int64_t quantized_6 = std::llround((6.0f / input_qtype.getScale()) +
                                          input_qtype.getZeroPoint());
+      int64_t quantized_min = input_qtype.getStorageTypeMin();
+      int64_t quantized_max = input_qtype.getStorageTypeMax();
+
+      int64_t clamp_min = std::max(quantized_0, quantized_min);
+      int64_t clamp_max = std::min(quantized_6, quantized_max);
 
       auto clamp_op = CreateOpAndInfer<tosa::ClampOp>(
           rewriter, op->getLoc(), input_type, input_value,
-          rewriter.getI64IntegerAttr(quantized_0),
-          rewriter.getI64IntegerAttr(quantized_6), rewriter.getF32FloatAttr(0),
+          rewriter.getI64IntegerAttr(clamp_min),
+          rewriter.getI64IntegerAttr(clamp_max), rewriter.getF32FloatAttr(0),
           rewriter.getF32FloatAttr(0));
 
       return clamp_op.getResult();
     } else if (fused_activation_fn.getValue() == "RELU_N1_TO_1") {
-      int32_t quantized_n1 = std::llround((-1.0f / input_qtype.getScale()) +
+      int64_t quantized_max = input_qtype.getStorageTypeMax();
+      int64_t quantized_min = input_qtype.getStorageTypeMin();
+      int64_t quantized_n1 = std::llround((-1.0f / input_qtype.getScale()) +
                                           input_qtype.getZeroPoint());
-      int32_t quantized_1 = std::llround((1.0f / input_qtype.getScale()) +
+      int64_t quantized_1 = std::llround((1.0f / input_qtype.getScale()) +
                                          input_qtype.getZeroPoint());
+
+      int64_t clamp_min = std::max(quantized_n1, quantized_min);
+      int64_t clamp_max = std::min(quantized_1, quantized_max);
 
       auto clamp_op = CreateOpAndInfer<tosa::ClampOp>(
           rewriter, op->getLoc(), input_type, input_value,
-          rewriter.getI64IntegerAttr(quantized_n1),
-          rewriter.getI64IntegerAttr(quantized_1), rewriter.getF32FloatAttr(0),
+          rewriter.getI64IntegerAttr(clamp_min),
+          rewriter.getI64IntegerAttr(clamp_max), rewriter.getF32FloatAttr(0),
           rewriter.getF32FloatAttr(0));
 
       return clamp_op.getResult();
@@ -3579,10 +3597,10 @@ llvm::Optional<Value> convertGatherNdOp(PatternRewriter& rewriter,
   // params tensor.
   //
   // From here, we take each of the ND dimensions and multiply it with
-  // the the size of the next params dimension (or 1 for the last
+  // the size of the next params dimension (or 1 for the last
   // dimension), then sum all these together with a reduce_sum
   // operator.  This is exactly the same mathematics as one would use
-  // flatten the indicies of an N-dimensional row-major array into a
+  // flatten the indices of an N-dimensional row-major array into a
   // 1-D array in C.
   //
   // More precisely, do an element-wise multiply with [params.shape[1

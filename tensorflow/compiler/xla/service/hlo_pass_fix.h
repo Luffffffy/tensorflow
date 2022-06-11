@@ -25,7 +25,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/compiler/xla/types.h"
-#include "tensorflow/core/platform/macros.h"
 
 namespace xla {
 
@@ -46,7 +45,7 @@ class HloPassFix : public Pass {
     TF_RETURN_IF_ERROR(RunToFixPoint(module, &run_state));
     outer_run_state->changed_this_iteration.insert(run_state.changed.begin(),
                                                    run_state.changed.end());
-    return Status::OK();
+    return OkStatus();
   }
 
   StatusOr<bool> Run(HloModule* module) override {
@@ -94,7 +93,7 @@ class HloPassFix : public Pass {
         break;
       }
     }
-    return Status::OK();
+    return OkStatus();
   }
 
   Status RunOnChangedComputationsOnce(HloModule* module, RunState* run_state) {
@@ -112,7 +111,7 @@ class HloPassFix : public Pass {
       run_state->changed_this_iteration.insert(computations.begin(),
                                                computations.end());
     }
-    return Status::OK();
+    return OkStatus();
   }
 };
 

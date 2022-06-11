@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/strings/substitute.h"
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
@@ -177,7 +178,23 @@ ConvPowerVR::ConvPowerVR(const OperationDef& definition,
       padding_(-attr.padding.prepended.w, -attr.padding.prepended.h, 0, 0),
       kernel_size_(attr.weights.shape.w, attr.weights.shape.h, 1, 1),
       dilation_(attr.dilations.w, attr.dilations.h, 1, 1),
-      conv_params_(GuessBestParams(gpu_info, definition, attr, dst_shape)) {}
+      conv_params_(GuessBestParams(gpu_info, definition, attr, dst_shape)) {
+  const int src_slices = DivideRoundUp(attr.weights.shape.i, 4);
+  const int dst_slices = DivideRoundUp(attr.weights.shape.o, 4);
+  if (attr.groups != 1) {
+    conv_params_.groups_support = true;
+    const int dst_group_slices = dst_slices / attr.groups;
+    if (dst_group_slices % conv_params_.block_size.w != 0) {
+      if (conv_params_.block_size.w == 4 && dst_group_slices % 2 == 0) {
+        conv_params_.block_size.w = 2;
+      } else {
+        conv_params_.block_size.w = 1;
+      }
+    }
+    args_.AddInt("src_group_size", src_slices);
+    args_.AddInt("dst_group_size", dst_slices / attr.groups);
+  }
+}
 
 ConvPowerVR::ConvPowerVR(const OperationDef& definition,
                          const Convolution2DAttributes& attr,
@@ -248,6 +265,44 @@ void ConvPowerVR::GenerateCode(const GpuInfo& gpu_info) {
   }
   const bool stride_correction =
       definition_.IsBatchSupported() && stride_.x != 1;
+
+  auto src_desc = definition_.src_tensors[0];
+  src_desc.SetAddressMode(AddressMode::kZero);
+  if (definition_.IsBatchSupported()) {
+    src_desc.SetStateVar("BatchedWidth", "true");
+  }
+  AddSrcTensor("src_tensor", src_desc);
+  if (definition_.src_tensors.size() == 2) {  // dynamic weights
+    const DataType weights_type = definition_.GetDataType();
+    if (conv_params_.weights_layout == WeightsLayout::kOSpatialIOGroupI4O4 ||
+        conv_params_.weights_layout == WeightsLayout::kOSpatialIOGroupO4I4) {
+      definition_.src_tensors[1] = {weights_type, TensorStorageType::BUFFER,
+                                    Layout::HWC};
+      BufferDescriptor desc;
+      desc.element_type = weights_type;
+      desc.element_size = 4;
+      desc.memory_type = conv_params_.weights_upload_type ==
+                                 ConvPowerVR::WeightsUploadType::CONSTANT_MEM
+                             ? MemoryType::CONSTANT
+                             : MemoryType::GLOBAL;
+
+      AddSrcBuffer("weights", desc);
+    } else {
+      TensorDescriptor desc{weights_type, TensorStorageType::TEXTURE_2D,
+                            Layout::HWC};
+      definition_.src_tensors[1] = desc;
+      definition_.src_tensors.push_back(desc);
+      definition_.src_tensors.push_back(desc);
+      definition_.src_tensors.push_back(desc);
+      for (int i = 0; i < 4; ++i) {
+        Texture2DDescriptor desc;
+        desc.element_type = definition_.src_tensors[1 + i].data_type;
+        const std::string name = "weights" + std::to_string(i);
+        AddSrcTexture2D("weights" + std::to_string(i), desc);
+      }
+    }
+  }
+
   code_ = GenerateConv(gpu_info, definition_, stride_correction, conv_params_);
   if (definition_.precision == CalculationsPrecision::F16 &&
       gpu_info.IsPowerVR()) {
@@ -343,25 +398,6 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
                                       const OperationDef& op_def,
                                       bool stride_correction,
                                       const ConvParams& conv_params) {
-  auto src_desc = op_def.src_tensors[0];
-  src_desc.SetAddressMode(AddressMode::kZero);
-  if (op_def.IsBatchSupported()) {
-    src_desc.SetStateVar("BatchedWidth", "true");
-  }
-  AddSrcTensor("src_tensor", src_desc);
-  if (op_def.src_tensors.size() == 2) {
-    // dynamic weights
-    BufferDescriptor desc;
-    desc.element_type = op_def.src_tensors[1].data_type;
-    desc.element_size = 4;
-    desc.memory_type = conv_params.weights_upload_type ==
-                               ConvPowerVR::WeightsUploadType::CONSTANT_MEM
-                           ? MemoryType::CONSTANT
-                           : MemoryType::GLOBAL;
-
-    AddSrcBuffer("weights", desc);
-  }
-
   const auto& src_def = op_def.src_tensors[0];
 
   auto generate_id = [&](const std::string& x, const std::string& y,
@@ -395,7 +431,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
     const std::vector<std::string> coords{x, y, z};
     for (int i = 0; i < axes.size(); ++i) {
       const auto& axis = axes[i];
-      if (src_def.HasAxis(axis) && !src_def.SupportsZeroClamp(axis) &&
+      if (src_def.HasAxis(axis) && !src_def.SupportsZeroClamp(axis, gpu_info) &&
           !is_1[i]) {
         if (!check.empty()) {
           check += " && ";
@@ -521,6 +557,18 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
     c += "    return;\n";
     c += "  }\n";
   }
+  if (conv_params.groups_support) {
+    c += "      int conv_group_id = DST_S / args.dst_group_size;\n";
+    c += "      int src_start_slice = conv_group_id * args.src_group_size;\n";
+    c += "      int src_end_slice = src_start_slice + args.src_group_size;\n";
+  }
+  const std::string src_group_start_slice =
+      conv_params.groups_support ? "src_start_slice" : "0";
+  const std::string src_group_end_slice =
+      conv_params.groups_support ? "src_end_slice" : "args.src_tensor.Slices()";
+  const std::string src_group_slices = conv_params.groups_support
+                                           ? "args.src_group_size"
+                                           : "args.src_tensor.Slices()";
   if (conv_params.weights_upload_type ==
       ConvPowerVR::WeightsUploadType::LOCAL_MEM_BY_THREADS) {
     if (conv_params.linear_spatial) {
@@ -638,7 +686,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
       if (src_def.HasAxis(Axis::DEPTH) && !conv_params_.z_kernel_is_1) {
         kernel_spatial_offset += " * args.kernel_size_z";
       }
-      offset = "DST_S * 4 * args.src_tensor.Slices()" + kernel_spatial_offset;
+      offset = "DST_S * 4 * " + src_group_slices + kernel_spatial_offset;
     }
     if (gpu_info.SupportsPointersInKernels()) {
       c += "  " + weights_global_ptr +
@@ -653,7 +701,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
       const std::string zck = "zck" + std::to_string(z);
       c += "  int zck" + std::to_string(z) + " = kz * args.dilation_z + zc" +
            std::to_string(z) + ";\n";
-      if (!src_def.SupportsZeroClamp(Axis::DEPTH)) {
+      if (!src_def.SupportsZeroClamp(Axis::DEPTH, gpu_info)) {
         c += "  bool in_z" + std::to_string(z) + " = " + zck + " >= 0 && " +
              zck + " < args.src_tensor.Depth();\n";
         if (!src_def.CanReadOutOfBorder(Axis::DEPTH)) {
@@ -669,7 +717,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
       const std::string yck = "yck" + std::to_string(y);
       c += "  int " + yck + " = ky * args.dilation_y + yc" + std::to_string(y) +
            ";\n";
-      if (!src_def.SupportsZeroClamp(Axis::HEIGHT)) {
+      if (!src_def.SupportsZeroClamp(Axis::HEIGHT, gpu_info)) {
         c += "  bool in_y" + std::to_string(y) + " = " + yck + " >= 0 && " +
              yck + " < args.src_tensor.Height();\n";
         if (!src_def.CanReadOutOfBorder(Axis::HEIGHT)) {
@@ -685,7 +733,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
       const std::string xck = "xck" + std::to_string(x);
       c += "  int xck" + std::to_string(x) + " = kx * args.dilation_x + xc" +
            std::to_string(x) + ";\n";
-      if (!src_def.SupportsZeroClamp(Axis::WIDTH)) {
+      if (!src_def.SupportsZeroClamp(Axis::WIDTH, gpu_info)) {
         c += "  bool in_x" + std::to_string(x) + " = " + xck + " >= 0 && " +
              xck + " < args.src_tensor.Width();\n";
         if (!src_def.CanReadOutOfBorder(Axis::WIDTH)) {
@@ -696,7 +744,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
     }
   }
   const bool need_multiple_slice_strides =
-      src_def.ReturnsZeroForNegOneRead() && !trivial_kernel_size;
+      src_def.ReturnsZeroForNegOneRead(gpu_info) && !trivial_kernel_size;
   for (int z = 0; z < block_size.z; ++z) {
     const std::string zind = std::to_string(z);
     for (int y = 0; y < block_size.y; ++y) {
@@ -713,8 +761,8 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
           coords += ", " + zc;
         }
         if (src_def.IsLinear()) {
-          c += "  args.src_tensor.GetAddress(addr" + id + ", " + coords +
-               ", 0);\n";
+          c += "  args.src_tensor.GetAddress(addr" + id + ", " + coords + ", " +
+               src_group_start_slice + ");\n";
           if (need_multiple_slice_strides) {
             const std::string check = generate_check(xind, yind, zind);
             c += "  addr" + id + " = select(-1, addr" + id + ", (" + check +
@@ -771,7 +819,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
             }
             address += ", s";
           }
-          if (src_def.ReturnsZeroForNegOneRead()) {
+          if (src_def.ReturnsZeroForNegOneRead(gpu_info)) {
             c += "    src" + id + " = args.src_tensor.Read<" + cl_type + ">(" +
                  address + ");\n";
             const std::string ds = trivial_kernel_size ? "ds" : "ds" + id;
@@ -801,6 +849,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
   const bool weights_type_as_accum_type =
       !(op_def.precision == CalculationsPrecision::F32_F16 &&
         conv_params.weights_data_type == DataType::FLOAT16);
+  bool use_fma = gpu_info.IsAMD() && gpu_info.IsApiOpenCl();
   auto conv_core = [&](int shared_offset) {
     const std::string channels[] = {"x", "y", "z", "w"};
     for (int s = 0; s < block_size.w; ++s) {
@@ -864,8 +913,13 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
                     w_val = "f" + weight_id;
                   }
                   if (GetWeightsDescription().IsI4O4()) {
-                    c += "    " + R + " += " + w_val + " * " + S + "." +
-                         channels[ch] + ";\n";
+                    if (use_fma) {
+                      c += "    " + R + " = fma(" + w_val + ", " + S + "." +
+                           channels[ch] + ", " + R + ");\n";
+                    } else {
+                      c += "    " + R + " += " + w_val + " * " + S + "." +
+                           channels[ch] + ";\n";
+                    }
                   } else {
                     c += "    " + R + "." + channels[ch] + " += dot(" + w_val +
                          ", " + S + ");\n";
@@ -916,7 +970,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
     }
   };
 
-  c += "  int s = 0;\n";
+  c += "  int s = " + src_group_start_slice + ";\n";
   c += "  do {\n";
   declare_src();
   const int total_work_items =
@@ -967,6 +1021,9 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
   } else {  // TEXTURES_MEM
     for (int dst_s = 0; dst_s < block_size.w; ++dst_s) {
       std::string f_y = trivial_kernel_size ? "s" : "filter_offset";
+      if (trivial_kernel_size && conv_params.groups_support) {
+        f_y = "s - src_start_slice";
+      }
       if (conv_params.different_weights_for_height) {
         f_y = "DST_Y * args.src_tensor.Slices() + s";
       }
@@ -1002,7 +1059,7 @@ std::string ConvPowerVR::GenerateConv(const GpuInfo& gpu_info,
       c += "    filters_offset += " + std::to_string(local_mem_size) + ";\n";
     }
   }
-  c += "  } while (s < args.src_tensor.Slices());\n";
+  c += "  } while (s < " + src_group_end_slice + ");\n";
   if (!conv_params.x_kernel_is_1) {
     c += "  };\n";
   }
@@ -1202,21 +1259,9 @@ ConvPowerVR::ConvParams ConvPowerVR::GuessBestParams(
       conv_params.block_size.x = 2;
     }
   } else if (gpu_info.IsAMD()) {
-    if (gpu_info.IsApiOpenCl()) {
-      if (different_weights_for_height) {
-        work_group_size_ = int3(32, 1, 1);
-        work_group_launch_order_ = int3(2, 0, 1);
-        conv_params.fixed_work_group_size = true;
-      } else {
-        work_group_size_ = int3(8, 4, 1);
-        work_group_launch_order_ = int3(2, 0, 1);
-        conv_params.fixed_work_group_size = true;
-      }
-    } else {
-      work_group_size_ = int3(8, 4, 1);
-      work_group_launch_order_ = int3(0, 1, 2);
-      conv_params.fixed_work_group_size = false;
-    }
+    work_group_size_ = int3(8, 4, 1);
+    work_group_launch_order_ = int3(0, 1, 2);
+    conv_params.fixed_work_group_size = false;
 
     if (gpu_info.IsApiOpenCl()) {
       conv_params.weights_upload_type = WeightsUploadType::CONSTANT_MEM;
@@ -1326,7 +1371,25 @@ ConvPowerVR::ConvParams ConvPowerVR::GuessBestParams(
     conv_params.fixed_work_group_size = false;
     conv_params.weights_upload_type = WeightsUploadType::GLOBAL_MEM;
   } else if (gpu_info.IsAdreno()) {
-    conv_params.block_size = int4(2, 2, 1, 2);
+    if (dst_shape) {
+      const int wave_size = gpu_info.adreno_info.GetWaveSize(
+          definition.precision == CalculationsPrecision::F16);
+      const double task_size =
+          1.0 * dst_shape->w * dst_shape->b * dst_shape->h * dst_depth;
+      const double waves =
+          task_size / gpu_info.GetComputeUnitsCount() / wave_size;
+      if (waves <= 6.0f) {
+        conv_params.block_size = int4(1, 1, 1, 1);
+      } else if (waves <= 12.0f) {
+        conv_params.block_size = int4(2, 1, 1, 1);
+      } else if (waves <= 24.0f) {
+        conv_params.block_size = int4(2, 1, 1, 2);
+      } else {
+        conv_params.block_size = int4(2, 2, 1, 2);
+      }
+    } else {
+      conv_params.block_size = int4(2, 2, 1, 2);
+    }
     if (gpu_info.adreno_info.IsAdreno3xx()) {
       if (definition.precision == CalculationsPrecision::F16) {
         conv_params.block_size = int4(2, 2, 1, 2);
@@ -1340,12 +1403,7 @@ ConvPowerVR::ConvParams ConvPowerVR::GuessBestParams(
     work_group_launch_order_ = int3(0, 1, 2);
     conv_params.fixed_work_group_size = false;
     conv_params.src_depth_loop_size = 1;
-    if (definition.src_tensors.size() == 2) {
-      // dynamic weights supported only with buffers.
-      conv_params.weights_upload_type = WeightsUploadType::GLOBAL_MEM;
-    } else {
-      conv_params.weights_upload_type = WeightsUploadType::TEXTURES_MEM_X4;
-    }
+    conv_params.weights_upload_type = WeightsUploadType::TEXTURES_MEM_X4;
   } else if (gpu_info.IsIntel()) {
     if (different_weights_for_height) {
       work_group_size_ = int3(16, 1, 1);
@@ -1359,19 +1417,27 @@ ConvPowerVR::ConvParams ConvPowerVR::GuessBestParams(
     }
     conv_params.block_size = int4(1, 1, 1, 4);
     conv_params.src_depth_loop_size = 1;
-    int sub_group_size = 16;
-    const bool supports_subgroups =
-        gpu_info.SupportsExtension("cl_khr_subgroups") ||
-        gpu_info.SupportsExtension("cl_intel_subgroups");
-    if (definition.precision != CalculationsPrecision::F32_F16 &&
-        supports_subgroups &&
-        gpu_info.SupportsExtension("cl_intel_required_subgroup_size") &&
-        gpu_info.SupportsSubGroupWithSize(sub_group_size)) {
+    conv_params.weights_upload_type = WeightsUploadType::LOCAL_MEM_BY_THREADS;
+    if (gpu_info.IsApiMetal() &&
+        definition.precision != CalculationsPrecision::F32_F16 &&
+        gpu_info.metal_info.IsMslVersionEqualOrHigher(2)) {
       conv_params.weights_upload_type =
           WeightsUploadType::PRIVATE_MEM_SIMD_BROADCAST;
-      conv_params.simd_size = sub_group_size;
-    } else {
-      conv_params.weights_upload_type = WeightsUploadType::LOCAL_MEM_BY_THREADS;
+      conv_params.simd_size = 8;
+    }
+    if (gpu_info.IsApiOpenCl()) {
+      const int kSubGroupSize = 16;
+      const bool supports_subgroups =
+          gpu_info.SupportsExtension("cl_khr_subgroups") ||
+          gpu_info.SupportsExtension("cl_intel_subgroups");
+      if (definition.precision != CalculationsPrecision::F32_F16 &&
+          supports_subgroups &&
+          gpu_info.SupportsExtension("cl_intel_required_subgroup_size") &&
+          gpu_info.SupportsSubGroupWithSize(kSubGroupSize)) {
+        conv_params.weights_upload_type =
+            WeightsUploadType::PRIVATE_MEM_SIMD_BROADCAST;
+        conv_params.simd_size = kSubGroupSize;
+      }
     }
     if (dst_depth % 4 == 0 || dst_depth >= 8) {
       conv_params.block_size.w = 4;

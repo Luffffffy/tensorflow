@@ -5,6 +5,7 @@ load(
     "tflite_custom_c_library",
 )
 load("//tensorflow:tensorflow.bzl", "get_compatible_with_portable")
+load("//tensorflow/lite:special_rules.bzl", "tflite_portable_test_suite")
 
 package(
     default_visibility = ["//visibility:public"],
@@ -56,12 +57,17 @@ cc_library(
 
 cc_library(
     name = "c_api",
-    hdrs = ["c_api.h"],
+    hdrs = [
+        "c_api.h",
+        "c_api_opaque.h",
+    ],
     copts = tflite_copts(),
     deps = [
         ":c_api_types",
         ":c_api_without_op_resolver",
+        ":common",
         "//tensorflow/lite:create_op_resolver_with_builtin_ops",
+        "//tensorflow/lite/kernels:kernel_util",
     ],
     alwayslink = 1,  # Why?? TODO(b/161243354): eliminate this.
 )
@@ -85,12 +91,14 @@ cc_library(
     deps = [
         ":c_api_internal",
         ":c_api_types",
+        ":common",
         "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:create_op_resolver_header",
         "//tensorflow/lite:framework",
         "//tensorflow/lite:version",
         "//tensorflow/lite/delegates:interpreter_utils",
         "//tensorflow/lite/delegates/nnapi:nnapi_delegate",
+        "//tensorflow/lite/kernels:kernel_util",
         "//tensorflow/lite/kernels/internal:compatibility",
     ],
     alwayslink = 1,  # Why?? TODO(b/161243354): eliminate this.
@@ -98,15 +106,24 @@ cc_library(
 
 cc_library(
     name = "c_api_experimental",
-    srcs = ["c_api_experimental.cc"],
-    hdrs = ["c_api_experimental.h"],
+    srcs = [
+        "c_api_experimental.cc",
+        "c_api_opaque.cc",
+    ],
+    hdrs = [
+        "c_api_experimental.h",
+        "c_api_opaque.h",
+    ],
     copts = tflite_copts(),
     deps = [
         ":c_api",
         ":c_api_internal",
+        ":c_api_types",
         ":common",
+        "//tensorflow/lite:builtin_ops",
         "//tensorflow/lite:framework",
         "//tensorflow/lite:kernel_api",
+        "//tensorflow/lite/kernels:kernel_util",
     ],
     alwayslink = 1,  # Why?? TODO(b/161243354): eliminate this.
 )
@@ -126,9 +143,12 @@ cc_test(
     data = [
         "//tensorflow/lite:testdata/add.bin",
         "//tensorflow/lite:testdata/add_quantized.bin",
+        "//tensorflow/lite:testdata/custom_sinh.bin",
     ],
     deps = [
         ":c_api",
+        ":c_api_experimental",
+        ":c_api_internal",
         ":common",
         "//tensorflow/lite/testing:util",
         "@com_google_googletest//:gtest_main",
@@ -138,10 +158,6 @@ cc_test(
 tflite_custom_c_library(
     name = "selectively_built_c_api_test_lib",
     testonly = 1,
-    models = [
-        "//tensorflow/lite:testdata/add.bin",
-        "//tensorflow/lite:testdata/add_quantized.bin",
-    ],
     visibility = ["//visibility:private"],
 )
 
@@ -153,6 +169,7 @@ cc_test(
     data = [
         "//tensorflow/lite:testdata/add.bin",
         "//tensorflow/lite:testdata/add_quantized.bin",
+        "//tensorflow/lite:testdata/custom_sinh.bin",
     ],
     deps = [
         ":common",
@@ -181,23 +198,35 @@ cc_test(
 
 cc_library(
     name = "common",
-    srcs = ["common.c"],
+    srcs = ["common.cc"],
     hdrs = [
         "builtin_op_data.h",
         "common.h",
     ],
     compatible_with = get_compatible_with_portable(),
-    copts = tflite_copts(),
+    copts = tflite_copts() + select({
+        "//tensorflow/lite:tensorflow_profiler_config": ["-DTF_LITE_TENSORFLOW_PROFILER"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":c_api_types",
-    ],
+    ] + select({
+        "//tensorflow/lite:tensorflow_profiler_config": [
+            "//tensorflow/lite:macros",
+            "//tensorflow/lite:tensorflow_profiler_logger_shim",
+        ],
+        "//conditions:default": [],
+    }),
     alwayslink = 1,  # Why?? TODO(b/161243354): eliminate this.
 )
 
 # For use with library targets that can't use relative paths.
 exports_files([
     "c_api.h",
+    "c_api_internal.h",
+    "c_api_opaque.h",
     "c_api_experimental.h",
+    "c_api_opaque.h",
     "c_api_types.h",
     "common.h",
 ])
@@ -207,7 +236,8 @@ filegroup(
     name = "c_api_srcs",
     srcs = [
         "c_api.cc",
-        "c_api_internal.h",
+        "c_api_experimental.cc",
+        "c_api_opaque.cc",
     ],
 )
 
@@ -241,6 +271,13 @@ cc_test(
     copts = tflite_copts(),
     data = [
         "//tensorflow/lite:testdata/add.bin",
+        "//tensorflow/lite:testdata/multi_signatures.bin",
+    ],
+    tags = [
+        # Testing on Android uses "--gunit_output=xml:test.xml" runtime flag,
+        # but this test is C code, not C++, and hence doesn't use GUnit,
+        # so doesn't support that flag.
+        "tflite_not_portable_android",
     ],
     deps = [
         ":c_api",
@@ -248,3 +285,5 @@ cc_test(
         ":common",
     ],
 )
+
+tflite_portable_test_suite()

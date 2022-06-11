@@ -15,6 +15,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/lite/quantization/lite/quantize_weights.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -42,7 +43,7 @@ using mlir::lite::QuantizeWeights;
 constexpr bool kUseUpdatedHybridSchemeDefault = true;
 
 std::unique_ptr<ModelT> CreateMutableModelFromFile(const Model* input_model) {
-  auto copied_model = absl::make_unique<ModelT>();
+  auto copied_model = std::make_unique<ModelT>();
   input_model->UnPackTo(copied_model.get(), nullptr);
   return copied_model;
 }
@@ -528,9 +529,7 @@ TEST_F(QuantizeWeightsTest, VerifyGatherQuantization) {
   }
 }
 
-// TODO(b/214186439): Support custom op quantization for MLIR dynamic range
-// quantization
-TEST_F(QuantizeWeightsTest, DISABLED_VerifyCustomOpQuantizationDequantize) {
+TEST_F(QuantizeWeightsTest, VerifyCustomOpQuantizationDequantize) {
   LoadCustomOpTestModel();
 
   // The custom op is not hybrid, and the second input is a constant that can
@@ -577,11 +576,11 @@ TEST_F(QuantizeWeightsTest, DISABLED_VerifyCustomOpQuantizationDequantize) {
   EXPECT_EQ(num_custom_ops_found, 1);
 }
 
-TEST_F(QuantizeWeightsTest, DISABLED_VerifyCustomOpQuantizationHybrid) {
+TEST_F(QuantizeWeightsTest, VerifyCustomOpQuantizationHybrid) {
   LoadCustomOpTestModel();
 
-  // The custom op is hybrid, and the second input is a constant that can
-  // be quantized.
+  // The custom op is dynamic range quantizable, and the second input is a
+  // constant that can be quantized.
   CustomOpMap custom_op_map;
   custom_op_map["CustomTestOp"] = {
       {1},    // quantizable_input_indices
