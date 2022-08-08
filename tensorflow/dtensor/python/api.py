@@ -488,12 +488,12 @@ def full_job_name(task_id: Optional[int] = None) -> str:
     task_id = client_id()
   # In local runs and unit tests, there should be exactly one client running
   # on one TF task.
-  if job_name() == "localhost" and task_id != 0:
+  if num_clients() == 1 and task_id != 0:
     raise ValueError(f"Unexpected task ID {task_id} in local runs")
   return f"{job_name()}/replica:0/task:{task_id}"
 
 
-def _task_id(job: str) -> Union[int, str]:
+def _bns_task_id(job: str) -> Union[int, str]:
   """Tries to extract an integer task ID from a job name.
 
   For example, for `job` = '/.../tpu_worker/0:port_name', return 0.
@@ -518,10 +518,16 @@ def jobs() -> List[str]:
   if d_jobs is None:
     return []
   d_jobs_list = d_jobs.split(",")
-  if d_jobs_list != sorted(d_jobs_list, key=_task_id):
-    raise ValueError(f"Unexpected DTENSOR_JOBS content {d_jobs}. Sort entries "
-                     "in DTENSOR_JOBS because cluster construction relies on "
-                     "the order.")
+
+  # Validate ordering for BNS style job names.
+  # For definition of BNS, refer to https://research.google/pubs/pub43438/.
+  if any([name.startswith("/bns/") for name in d_jobs_list]):
+    if d_jobs_list != sorted(d_jobs_list, key=_bns_task_id):
+      raise ValueError(
+          f"Unexpected DTENSOR_JOBS content {d_jobs}. Sort entries "
+          "in DTENSOR_JOBS because cluster construction relies on "
+          "the order.")
+
   return d_jobs_list
 
 
@@ -535,11 +541,15 @@ def heartbeat_enabled() -> bool:
 # Private methods.
 
 
-def _dtensor_device() -> dtensor_device.DTensorDevice:
+def _set_dtensor_device(device: dtensor_device.DTensorDevice) -> None:
   global _dtensor_singleton
+  _dtensor_singleton = device
+
+
+def _dtensor_device() -> dtensor_device.DTensorDevice:
   with _dtensor_singleton_lock:
     if _dtensor_singleton is None:
-      _dtensor_singleton = dtensor_device.DTensorDevice(meshes=[])
+      _set_dtensor_device(dtensor_device.DTensorDevice(meshes=[]))
   return _dtensor_singleton
 
 

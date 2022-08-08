@@ -22,6 +22,7 @@ limitations under the License.
 #include <numeric>
 #include <string>
 
+#include "absl/strings/escaping.h"
 #include "third_party/eigen3/Eigen/Core"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -30,6 +31,7 @@ limitations under the License.
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Threading.h"
@@ -52,7 +54,6 @@ limitations under the License.
 #include "mlir/Transforms/FoldUtils.h"  // from @llvm-project
 #include "mlir/Transforms/InliningUtils.h"  // from @llvm-project
 #include "mlir/Transforms/RegionUtils.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/lite/ir/tfl_structs.cc.inc"
 #include "tensorflow/compiler/mlir/lite/utils/arithmetic_count_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops_a_m.h"
@@ -404,6 +405,22 @@ struct TensorFlowLiteDialectFoldInterface : public DialectFoldInterface {
   }
 };
 
+void TFLDialect::printType(Type type, DialectAsmPrinter &os) const {
+  if (type.isa<ControlType>()) {
+    os << "control";
+    return;
+  }
+  os << "<unknown TFL type>";
+}
+
+Type TFLDialect::parseType(DialectAsmParser &parser) const {
+  StringRef data_type;
+  if (parser.parseKeyword(&data_type)) return Type();
+  if (data_type == "control") return ControlType::get(getContext());
+  parser.emitError(parser.getNameLoc()) << "unknown TFL type: " << data_type;
+  return nullptr;
+}
+
 void TFLDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
@@ -415,6 +432,7 @@ void TFLDialect::initialize() {
       >();
   addInterfaces<TensorFlowLiteInlinerInterface,
                 TensorFlowLiteDialectFoldInterface>();
+  addTypes<ControlType>();
 }
 
 //===----------------------------------------------------------------------===//
@@ -894,12 +912,11 @@ OpFoldResult ConcatenationOp::fold(ArrayRef<Attribute> operands) {
 
 mlir::LogicalResult CustomOp::verify() {
   CustomOp op = *this;
-  OpaqueElementsAttr opaque_attr =
-      op.custom_option().cast<OpaqueElementsAttr>();
-  if (!opaque_attr.getType().hasStaticShape())
-    return op.emitOpError("custom_option should have a static shape.");
-  const int attribute_size = opaque_attr.getValue().size();
-  if (attribute_size != opaque_attr.getType().cast<ShapedType>().getDimSize(0))
+  ConstBytesAttr const_bytes_attr = op.custom_option().cast<ConstBytesAttr>();
+  const int attribute_size = const_bytes_attr.getValue().size();
+  if (const_bytes_attr.getType().isa<ShapedType>() &&
+      attribute_size !=
+          const_bytes_attr.getType().cast<ShapedType>().getDimSize(0))
     return op.emitOpError(
         "custom_option should have the same length of content with shape.");
   return success();
@@ -2227,7 +2244,7 @@ LogicalResult UnpackOp::inferReturnTypes(
     SmallVectorImpl<Type> &inferredReturnTypes) {
   UnpackOpAdaptor op(operands, attributes);
   // TODO(jpienaar): Refactor verify
-  if (failed(op.verify(loc.hasValue() ? *loc : UnknownLoc::get(context))))
+  if (failed(op.verify(loc.has_value() ? *loc : UnknownLoc::get(context))))
     return failure();
 
   if (operands.size() != 1) {
@@ -3439,7 +3456,7 @@ void IfOp::getSuccessorRegions(Optional<unsigned> index,
                                ArrayRef<Attribute> operands,
                                SmallVectorImpl<RegionSuccessor> &regions) {
   // The `then` and the `else` region branch back to the parent operation.
-  if (index.hasValue()) {
+  if (index.has_value()) {
     regions.push_back(RegionSuccessor(getResults()));
     return;
   }
@@ -3806,11 +3823,173 @@ bool NoValueOp::isBuildableWith(Attribute value, Type type) {
   return value.isa<UnitAttr>() && type.isa<NoneType>();
 }
 
+YieldOp ControlNodeOp::GetYield() {
+  return llvm::cast<YieldOp>(GetBody().back());
+}
+
+// Checks if a TFL.control_node wraps a single operation and the single
+// operation results are perfectly forwarded to the wrapper's yield.
+bool ControlNodeOp::WrapsSinglePerfectlyForwardedOp() {
+  auto body = GetBody().without_terminator();
+  if (!hasSingleElement(body)) return false;
+
+  Operation &controlled_op = *body.begin();
+  YieldOp yield = GetYield();
+  return controlled_op.getNumResults() == yield.getNumOperands() &&
+         std::equal(controlled_op.getResults().begin(),
+                    controlled_op.getResults().end(),
+                    yield.getOperands().begin());
+}
+
+mlir::LogicalResult ControlNodeOp::verify() {
+  ControlNodeOp control_node = *this;
+  if (!control_node.GetBody().args_empty())
+    return control_node.emitOpError() << "expects body without any arguments";
+
+  Operation &yield = control_node.GetBody().back();
+  if (!isa<YieldOp>(yield))
+    return yield.emitOpError()
+           << "invalid TFL.control_node terminator, yield expected";
+
+  // Ensure that the terminator's operands and the control_node results match in
+  // types.
+  const int result_count =
+      control_node.getNumResults() - 1;  // 1 for control token
+  const int num_operands = yield.getNumOperands();
+  if (num_operands != result_count)
+    return yield.emitOpError()
+           << "has " << yield.getNumOperands()
+           << " operand, but control_node returns " << result_count;
+  for (const int operand_idx : llvm::seq<int>(0, yield.getNumOperands())) {
+    if (control_node.getResult(operand_idx).getType() !=
+        yield.getOperand(operand_idx).getType())
+      return yield.emitOpError() << "operand #" << operand_idx
+                                 << " type mismatch control_node results";
+  }
+  return success();
+}
+
+void ControlNodeOp::print(OpAsmPrinter &p) {
+  if (getNumOperands()) {
+    // These are always control operand, no explicit type needed.
+    p << '(';
+    p.printOperands(getOperands());
+    p << ')';
+  }
+  // Check if we can print the short "controls" form: that is if the
+  // control_node contains a single operation and the results of this operation
+  // are perfectly forwarded to the yield.
+  if (getOperation()->getAttrs().empty() && WrapsSinglePerfectlyForwardedOp()) {
+    Operation &controlled_op = GetBody().front();
+    // The "controls" syntax only encodes a single location.
+    YieldOp yield_op = GetYield();
+    // In order to correctly round-trip, we can only use this syntax when all
+    // the locations are identical.
+    if (controlled_op.getLoc() == getLoc() && yield_op.getLoc() == getLoc()) {
+      p << " controls ";
+      p.printGenericOp(&controlled_op);
+      return;
+    }
+  }
+  p << ' ';
+  p.printRegion(getOperation()->getRegion(0));
+  p.printOptionalAttrDict(getOperation()->getAttrs());
+}
+
+ParseResult ControlNodeOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Parse the body region.
+  llvm::SMLoc loc = parser.getCurrentLocation();
+  Type control_type = ControlType::get(parser.getBuilder().getContext());
+
+  // Parse optional argument list (control dependencies only).
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> op_infos;
+  if (parser.parseOperandList(op_infos, OpAsmParser::Delimiter::OptionalParen))
+    return failure();
+  if (!op_infos.empty()) {
+    SmallVector<Type, 2> types(op_infos.size(), control_type);
+    if (parser.resolveOperands(op_infos, types, loc, result.operands))
+      return failure();
+  }
+
+  Region &body = *result.addRegion();
+
+  if (succeeded(parser.parseOptionalKeyword("controls"))) {
+    // If we parse the short version of the control node, we have an operation
+    // in the generic form that follows the "controls" keyword. Parse it inside
+    // the region and forward all of its results as-is to the yield operation.
+    body.push_back(new Block);
+    Block &block = body.back();
+    Operation *controlled_op =
+        parser.parseGenericOperation(&block, block.begin());
+    if (!controlled_op) return failure();
+    OpBuilder builder(parser.getBuilder().getContext());
+    builder.setInsertionPointToEnd(&block);
+    builder.create<YieldOp>(controlled_op->getLoc(),
+                            controlled_op->getResults());
+    result.location = controlled_op->getLoc();
+  } else if (parser.parseRegion(body)) {
+    return failure();
+  }
+
+  ControlNodeOp::ensureTerminator(body, parser.getBuilder(), result.location);
+
+  // Get the results type for the control node from the terminator operands.
+  Operation &yield = body.back().back();
+  result.types.reserve(yield.getNumOperands() + 1);
+  result.types.append(yield.operand_type_begin(), yield.operand_type_end());
+  result.types.push_back(control_type);
+
+  // Parse the optional attribute list.
+  if (parser.parseOptionalAttrDict(result.attributes)) return failure();
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// ConstBytesAttr
+//===----------------------------------------------------------------------===//
+
+Attribute ConstBytesAttr::parse(AsmParser &parser, Type type) {
+  if (parser.parseColon()) {
+    return nullptr;
+  }
+
+  std::string data;
+  if (parser.parseString(&data)) {
+    return nullptr;
+  }
+  if (data.size() < 2 || data.substr(0, 2) != "0x") {
+    parser.emitError(parser.getNameLoc(), "Hex string doesn't start with `0x`");
+    return nullptr;
+  }
+
+  std::string bytes_data = absl::HexStringToBytes(data.substr(2));
+  return ConstBytesAttr::get(parser.getBuilder().getContext(), bytes_data);
+}
+
+void ConstBytesAttr::print(mlir::AsmPrinter &printer) const {
+  StringRef bytes_str = getValue();
+  printer << " : \"0x" << llvm::toHex(bytes_str) << "\"";
+}
+
 //===----------------------------------------------------------------------===//
 // TableGen'd op method definitions
 //===----------------------------------------------------------------------===//
 
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops_interface.cc.inc"
+
+static FailureOr<SmallVector<int32_t>> parseI32Array(AsmParser &parser) {
+  SmallVector<int32_t> elements;
+  auto elementParser = [&]() {
+    int32_t element;
+    if (failed(parser.parseInteger(element))) return failure();
+    elements.push_back(element);
+    return success();
+  };
+  if (parser.parseCommaSeparatedList(AsmParser::Delimiter::Square,
+                                     elementParser))
+    return failure();
+  return elements;
+}
 
 }  // namespace TFL
 }  // namespace mlir
@@ -3829,9 +4008,9 @@ namespace TFL {
 
 Operation *TFLDialect::materializeConstant(OpBuilder &builder, Attribute value,
                                            Type type, Location loc) {
-  // If this is an opaque elements attribute or the result type doesn't match
-  // the attribute type, then generate a tfl.pseudo_const.
-  if (value.isa<OpaqueElementsAttr>() ||
+  // If this is a constant bytes attribute or the result type doesn't match the
+  // attribute type, then generate a tfl.pseudo_const.
+  if (value.isa<ConstBytesAttr>() ||
       (value.isa<ElementsAttr>() && value.getType() != type))
     return builder.create<ConstOp>(loc, type, value.cast<ElementsAttr>());
   if (arith::ConstantOp::isBuildableWith(value, type))

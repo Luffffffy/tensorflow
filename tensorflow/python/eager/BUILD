@@ -673,6 +673,7 @@ py_library(
     visibility = ["//tensorflow:internal"],
     deps = [
         "//tensorflow/python:constant_op",
+        "//tensorflow/python/saved_model/registration",
         "//tensorflow/python/trackable:asset",
         "//tensorflow/python/trackable:base",
         "//tensorflow/python/trackable:resource",
@@ -1192,6 +1193,7 @@ cuda_py_test(
         "//tensorflow/python:array_ops",
         "//tensorflow/python:framework",
         "//tensorflow/python:math_ops",
+        "//tensorflow/python/distribute/failure_handling:check_preemption_py",
         "@absl_py//absl/testing:parameterized",
     ],
 )
