@@ -61,10 +61,9 @@ py_library(
     srcs = ["xla_client_test.py"],
     srcs_version = "PY3",
     deps = [
-        ":custom_call_for_test",
         ":xla_client",
-        ":xla_extension",
         "@absl_py//absl/flags",
+        "@absl_py//absl/logging",
         "@absl_py//absl/testing:absltest",
         "@absl_py//absl/testing:parameterized",
     ],
@@ -83,6 +82,7 @@ py_test(
         ":xla_client",
         ":xla_extension",
         "@absl_py//absl/flags",
+        "@absl_py//absl/logging",
         "@absl_py//absl/testing:absltest",
         "@absl_py//absl/testing:parameterized",
     ] + xla_py_test_deps(),
@@ -104,6 +104,7 @@ py_test(
         ":xla_client",
         ":xla_extension",
         "@absl_py//absl/flags",
+        "@absl_py//absl/logging",
         "@absl_py//absl/testing:absltest",
         "@absl_py//absl/testing:parameterized",
         "//tensorflow/python:framework_test_lib",
@@ -292,6 +293,7 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "@com_google_absl//absl/types:variant",
         "@pybind11",
+        "//tensorflow/compiler/xla/pjrt:host_callback",
         "//tensorflow/compiler/xla:comparison_util",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
@@ -521,7 +523,6 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/hash",
-        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@pybind11",
@@ -541,10 +542,10 @@ cc_library(
     features = ["-use_header_modules"],
     deps = [
         ":types",
-        "//tensorflow/compiler/mlir/hlo",
         "//tensorflow/compiler/mlir/xla:hlo_to_mlir_hlo",
         "//tensorflow/compiler/xla:status",
         "//tensorflow/compiler/xla/client:xla_computation",
+        "//tensorflow/compiler/xla/mlir_hlo",
         "//tensorflow/compiler/xla/pjrt:mlir_to_hlo",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
@@ -700,6 +701,7 @@ pybind_extension(
         "//third_party/py/numpy",
     ],
     pytype_srcs = glob(["xla_extension/*.pyi"]),
+    visibility = ["//visibility:public"],
     deps = [
                ":dlpack",
                ":jax_jit",
@@ -741,6 +743,7 @@ pybind_extension(
                # without any TF dependencies as "jaxlib" on Pypi, and "jaxlib" does
                # not require Tensorflow.
                "//tensorflow/core:lib_internal_impl",  # buildcleaner: keep
+               "//tensorflow/core/distributed_runtime/preemption:preemption_sync_manager",
                "//tensorflow/python:bfloat16_lib",
            ] + select({
                ":gpu_enabled": [

@@ -132,9 +132,7 @@ ConvolutionTransposed::ConvolutionTransposed(
 std::string ConvolutionTransposed::GenerateConvolutionTransposedCode(
     const OperationDef& op_def, const GpuInfo& gpu_info,
     const int4& block_size) {
-  auto src_desc = op_def.src_tensors[0];
-  src_desc.SetAddressMode(AddressMode::kZero);
-  AddSrcTensor("src_tensor", src_desc);
+  AddSrcTensor("src_tensor", op_def.src_tensors[0]);
   AddDstTensor("dst_tensor", op_def.dst_tensors[0]);
 
   if (op_def.src_tensors.size() != 1) {
@@ -142,14 +140,14 @@ std::string ConvolutionTransposed::GenerateConvolutionTransposedCode(
     if (weights_layout_ == WeightsLayout::kOSpatialIOGroupI4O4 ||
         weights_layout_ == WeightsLayout::kOSpatialIOGroupO4I4) {
       BufferDescriptor desc;
-      desc.element_type = op_def.src_tensors[1].data_type;
+      desc.element_type = op_def.src_tensors[1].GetDataType();
       desc.element_size = 16;
       desc.memory_type = MemoryType::GLOBAL;
       AddSrcBuffer("weights", desc);
     } else {
       for (int i = 0; i < 4; ++i) {
         Texture2DDescriptor desc;
-        desc.element_type = op_def.src_tensors[1 + i].data_type;
+        desc.element_type = op_def.src_tensors[1 + i].GetDataType();
         const std::string name = "weights" + std::to_string(i);
         AddSrcTexture2D("weights" + std::to_string(i), desc);
       }
@@ -423,8 +421,8 @@ std::string ConvolutionTransposed::GenerateConvolutionTransposedCode(
           coords += ", sz" + zind;
         }
         if (src_def.IsLinear()) {
-          c += "      args.src_tensor.GetAddress(addr" + id + ", " + coords +
-               ", 0);\n";
+          c += "      int addr" + id + " = args.src_tensor.GetAddress(" +
+               coords + ", 0);\n";
           if (src_def.ReturnsZeroForNegOneRead(gpu_info)) {
             c += "      addr" + id + " = select(-1, addr" + id + ", (" + check +
                  "));\n";
@@ -616,13 +614,10 @@ ConvolutionTransposed CreateConvolutionTransposed(
   ConvolutionTransposed result(definition, attr, gpu_info);
   result.UploadWeights(attr.weights, UseBufferForWeights(gpu_info));
 
-  TensorLinearDescriptor desc;
-  desc.storage_type =
-      DeduceLinearStorageType(definition.GetPrimaryStorageType());
-  desc.element_type = definition.GetDataType();
-  desc.UploadLinearData(attr.bias);
-  result.args_.AddObject(
-      "biases", std::make_unique<TensorLinearDescriptor>(std::move(desc)));
+  TensorDescriptor bias_tensor_desc = CreateConstantLinearTensorDescriptor(
+      gpu_info, definition.src_tensors[0].GetDataType(), attr.bias);
+  result.args_.AddObject("biases", std::make_unique<TensorDescriptor>(
+                                       std::move(bias_tensor_desc)));
   return result;
 }
 
@@ -632,13 +627,10 @@ ConvolutionTransposed CreateConvolutionTransposed3D(
   ConvolutionTransposed result(definition, attr, gpu_info);
   result.UploadWeights(attr.weights, UseBufferForWeights(gpu_info));
 
-  TensorLinearDescriptor desc;
-  desc.storage_type =
-      DeduceLinearStorageType(definition.GetPrimaryStorageType());
-  desc.element_type = definition.GetDataType();
-  desc.UploadLinearData(attr.bias);
-  result.args_.AddObject(
-      "biases", std::make_unique<TensorLinearDescriptor>(std::move(desc)));
+  TensorDescriptor bias_tensor_desc = CreateConstantLinearTensorDescriptor(
+      gpu_info, definition.src_tensors[0].GetDataType(), attr.bias);
+  result.args_.AddObject("biases", std::make_unique<TensorDescriptor>(
+                                       std::move(bias_tensor_desc)));
   return result;
 }
 
@@ -667,12 +659,10 @@ ConvolutionTransposed CreateConvolutionTransposedDynamicWeights(
   }
   ConvolutionTransposed result(new_def, attr, gpu_info);
 
-  TensorLinearDescriptor desc;
-  desc.storage_type = DeduceLinearStorageType(new_def.GetPrimaryStorageType());
-  desc.element_type = new_def.GetDataType();
-  desc.UploadLinearData(attr.bias);
-  result.args_.AddObject(
-      "biases", std::make_unique<TensorLinearDescriptor>(std::move(desc)));
+  TensorDescriptor bias_tensor_desc = CreateConstantLinearTensorDescriptor(
+      gpu_info, definition.src_tensors[0].GetDataType(), attr.bias);
+  result.args_.AddObject("biases", std::make_unique<TensorDescriptor>(
+                                       std::move(bias_tensor_desc)));
   return result;
 }
 

@@ -193,6 +193,7 @@ py_library(
         ":string_ops",
         ":tensor_array_ops",
         ":training",
+        ":uniform_quant_ops_gen",
         ":weights_broadcast_ops",
         ":while_v2",
         "//tensorflow/core:protos_all_py",
@@ -966,6 +967,16 @@ tf_gen_op_wrapper_private_py(
     ],
 )
 
+tf_gen_op_wrapper_private_py(
+    name = "uniform_quant_ops_gen",
+    visibility = [
+        "//tensorflow:__subpackages__",
+    ],
+    deps = [
+        "//tensorflow/core:uniform_quant_ops_op_lib",
+    ],
+)
+
 py_library(
     name = "array_grad",
     srcs = ["ops/array_grad.py"],
@@ -973,11 +984,21 @@ py_library(
     deps = [
         ":array_ops",
         ":array_ops_gen",
+        ":control_flow_ops",
+        ":control_flow_util",
         ":math_ops",
+        ":math_ops_gen",
+        ":pywrap_tfe",
+        ":resource_variable_ops_gen",
         ":sparse_ops",
         "//tensorflow/compiler/tf2xla/ops:gen_xla_ops",
-        "//tensorflow/python/framework",
+        "//tensorflow/python/client:pywrap_tf_session",
+        "//tensorflow/python/eager:context",
+        "//tensorflow/python/framework:constant_op",
         "//tensorflow/python/framework:for_generated_wrappers",
+        "//tensorflow/python/framework:indexed_slices",
+        "//tensorflow/python/framework:sparse_tensor",
+        "//tensorflow/python/framework:tensor_util",
     ],
 )
 
@@ -1867,6 +1888,7 @@ py_library(
         ":lookup_ops_gen",
         ":math_ops",
         ":string_ops",
+        "//tensorflow/python/checkpoint:saveable_compat",
         "//tensorflow/python/eager:context",
         "//tensorflow/python/framework:constant_op",
         "//tensorflow/python/framework:for_generated_wrappers",
@@ -3276,6 +3298,7 @@ pywrap_tensorflow_macro(
         "//tensorflow/core/config:flags",
         "//tensorflow/c/experimental/gradients",
         "//tensorflow/c/experimental/gradients/tape",
+        "//tensorflow/cc/saved_model:fingerprinting_impl",
         "//tensorflow/compiler/mlir/tensorflow/c:mlir_c_api_registration",
         "//tensorflow/core/data/service:dispatcher_client",
         "//tensorflow/core/data/service:grpc_util",
@@ -3353,6 +3376,7 @@ filegroup(
         "//tensorflow/c:python_api",  # tf_session
         "//tensorflow/c:tf_status_helper",  # tfe
         "//tensorflow/cc/saved_model:metrics_impl",  # SavedModel metrics
+        "//tensorflow/cc/saved_model:fingerprinting_impl",  # SavedModel fingerprinting
         "//tensorflow/compiler/jit:get_compiler_ir",  # tfe
         "//tensorflow/core/platform:statusor",  # tfe
         "//tensorflow/compiler/jit:flags",  # tfe
@@ -3863,6 +3887,24 @@ cuda_py_test(
         ":nccl_ops",
         ":platform_test",
         "//tensorflow/python/framework:test_lib",
+    ],
+)
+
+cuda_py_test(
+    name = "factory_ops_test",
+    size = "small",
+    srcs = ["ops/factory_ops_test.py"],
+    tags = [
+        "no_gpu",  # TODO(b/213596871): a similar test times out (delete
+        # the "no_gpu" tag once this is bug is fully resolved)
+    ],
+    deps = [
+        ":sparse_ops",
+        "//tensorflow/python:platform_test",
+        "//tensorflow/python/data/ops:dataset_ops",
+        "//tensorflow/python/distribute:mirrored_strategy",
+        "//tensorflow/python/eager:def_function",
+        "@absl_py//absl/testing:parameterized",
     ],
 )
 
