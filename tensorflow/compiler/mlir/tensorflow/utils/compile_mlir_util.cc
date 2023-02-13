@@ -15,7 +15,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tensorflow/utils/compile_mlir_util.h"
 
-#include "tensorflow/compiler/mlir/mlir_bridge_rollout_policy.h"
+#include "tensorflow/compiler/mlir/tf2xla/mlir_bridge_rollout_policy.h"
 #include "absl/types/optional.h"
 #include "absl/types/variant.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -26,6 +26,7 @@ limitations under the License.
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/Shape/IR/Shape.h"  // from @llvm-project
+#include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
@@ -33,7 +34,10 @@ limitations under the License.
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/IR/OpDefinition.h"  // from @llvm-project
+#include "mlir/Pass/PassManager.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
+#include "stablehlo/dialect/Register.h"  // from @stablehlo
 #include "tensorflow/compiler/mlir/tensorflow/dialect_registration.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
@@ -46,24 +50,29 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dump_mlir_util.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/dynamic_shape_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/serialize_mlir_module_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/translate_utils.h"
-#include "tensorflow/compiler/mlir/xla/mlir_hlo_to_hlo.h"
 #include "tensorflow/compiler/mlir/xla/transforms/adjust_layout.h"
 #include "tensorflow/compiler/mlir/xla/transforms/passes.h"
-#include "tensorflow/compiler/mlir/xla/type_to_shape.h"
+#include "tensorflow/compiler/mlir/xla/transforms/xla_legalize_targets.h"
 #include "tensorflow/compiler/tf2xla/layout_util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
+#include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
-#include "tensorflow/compiler/xla/mlir_hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
-#include "tensorflow/compiler/xla/mlir_hlo/include/mlir-hlo/Dialect/mhlo/IR/register.h"
-#include "tensorflow/compiler/xla/mlir_hlo/include/mlir-hlo/Dialect/mhlo/transforms/passes.h"
-#include "tensorflow/compiler/xla/service/hlo_sharding.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_sharding.h"
+#include "tensorflow/compiler/xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "tensorflow/compiler/xla/mlir_hlo/mhlo/IR/register.h"
+#include "tensorflow/compiler/xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "tensorflow/compiler/xla/shape.h"
+#include "tensorflow/compiler/xla/translate/mhlo_to_hlo/layout_util.h"
+#include "tensorflow/compiler/xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
+#include "tensorflow/compiler/xla/translate/mhlo_to_hlo/type_to_shape.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/platform/error_payloads.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/protobuf/core_platform_payloads.pb.h"
 #include "tensorflow/core/tpu/tpu_defs.h"
@@ -153,6 +162,27 @@ Status GetXlaInputShapes(
   return OkStatus();
 }
 
+// Returns a static ranked tensor type corresponding to the given static or
+// bounded type by using the bounds as dimension sizes. Returns null if is
+// neither.
+mlir::RankedTensorType GetBufferType(mlir::Type ty) {
+  auto ranked_ty = ty.dyn_cast_or_null<mlir::RankedTensorType>();
+  if (!ranked_ty) return {};
+
+  int64_t rank = ranked_ty.getRank();
+  llvm::SmallVector<int64_t, 4> dims = llvm::to_vector<4>(ranked_ty.getShape());
+  auto encoding = ranked_ty.getEncoding()
+                      .dyn_cast_or_null<mlir::mhlo::TypeExtensionsAttr>();
+  if (encoding && !encoding.getBounds().empty()) {
+    for (int64_t dim = 0; dim < rank; ++dim) {
+      if (dims[dim] == mlir::ShapedType::kDynamic) {
+        dims[dim] = encoding.getBounds()[dim];
+      }
+    }
+  }
+  return GetTypeFromTFTensorShape(dims, ranked_ty.getElementType());
+}
+
 // Calculates computation output shape and build OutputDescription for each
 // output based on static shapes in MLIR module. If an output is a resource
 // write, `resource_updates` is populated insead of `outputs` for that output.
@@ -162,12 +192,17 @@ Status GetOutputInfo(
     xla::Shape* xla_output_shape, std::vector<XlaOutputDescription>* outputs,
     std::vector<XlaResourceUpdate>* resource_updates) {
   auto shape_representation_fn_no_fast_memory =
-      [shape_determination_fns](const TensorShape& shape, DataType dtype) {
-        auto layout_preference = shape_determination_fns.layout_preference_fn(
-            shape, dtype, std::nullopt);
-        return shape_determination_fns.shape_representation_fn(
-            shape, dtype, /*use_fast_memory=*/false, layout_preference);
-      };
+      [shape_determination_fns](
+          const xla::Shape& xla_shape) -> StatusOr<xla::Shape> {
+    TensorShape shape;
+    TF_RETURN_IF_ERROR(XLAShapeToTensorShape(xla_shape, &shape));
+    TF_ASSIGN_OR_RETURN(DataType dtype, EncodePrimitiveTypeAsDataType(
+                                            xla_shape.element_type()));
+    auto layout_preference = shape_determination_fns.layout_preference_fn(
+        shape, dtype, std::nullopt);
+    return shape_determination_fns.shape_representation_fn(
+        shape, dtype, /*use_fast_memory=*/false, layout_preference);
+  };
 
   mlir::func::FuncOp main_func =
       module.lookupSymbol<mlir::func::FuncOp>("main");
@@ -187,11 +222,44 @@ Status GetOutputInfo(
             i, "tf.aliasing_output"))
       output_to_input_alias[aliasing_output.getInt()] = i;
 
+  auto return_op = main_func.begin()->getTerminator();
   for (const auto& type_and_idx : llvm::enumerate(func_type.getResults())) {
-    TF_ASSIGN_OR_RETURN(
-        xla::Shape shape,
-        xla::TypeToShape(type_and_idx.value(),
-                         shape_representation_fn_no_fast_memory));
+    size_t idx = type_and_idx.index();
+    auto result_ty = type_and_idx.value().cast<mlir::RankedTensorType>();
+
+    // If the result type isn't static, then the owner of the result may be a
+    // cast op from a more specific bounded type to an unbounded dynamic type.
+    // Use the bounded type to get the buffer size.
+    mlir::RankedTensorType buffer_ty = result_ty;
+    if (!buffer_ty.hasStaticShape()) {
+      mlir::Value return_val = return_op->getOperand(idx);
+      if (auto owner = mlir::dyn_cast_or_null<mlir::tensor::CastOp>(
+              return_val.getDefiningOp())) {
+        // For bounded dynamic type, get a static size by taking bounds as the
+        // dimensions. These dimensions are marked as dynamic in xla::Shape
+        // below.
+        buffer_ty = GetBufferType(owner.getOperand().getType());
+        if (!buffer_ty || !buffer_ty.hasStaticShape()) {
+          return errors::InvalidArgument(
+              "results needs to be static or bounded");
+        }
+      }
+    }
+
+    xla::Shape shape = xla::TypeToShape(buffer_ty);
+    if (shape.element_type() == xla::PRIMITIVE_TYPE_INVALID) {
+      return errors::InvalidArgument("XLA conversion failed for MLIR type.");
+    }
+    TF_ASSIGN_OR_RETURN(shape, shape_representation_fn_no_fast_memory(shape));
+
+    if (!result_ty.hasStaticShape()) {
+      int64_t rank = result_ty.getRank();
+      for (int64_t dim = 0; dim < rank; ++dim) {
+        if (result_ty.isDynamicDim(dim)) {
+          shape.set_dynamic_dimension(dim, true);
+        }
+      }
+    }
 
     auto sharding = main_func.getResultAttrOfType<mlir::StringAttr>(
         type_and_idx.index(), "mhlo.sharding");
@@ -248,6 +316,7 @@ void GetInputMappingForMlir(int num_inputs, std::vector<int>* input_mapping) {
 static void RegisterDialects(mlir::DialectRegistry& registry) {
   mlir::RegisterAllTensorFlowDialects(registry);
   mlir::mhlo::registerAllMhloDialects(registry);
+  mlir::stablehlo::registerAllDialects(registry);
 }
 
 // Checks if functions can be inlined after TF -> HLO legalization. Currently
@@ -257,13 +326,144 @@ bool CanInlineFunctionsPostLegalization(llvm::StringRef device_type) {
   return device_type == DEVICE_TPU_XLA_JIT;
 }
 
+// These passes are grouped together and must run in this specific order.
+void AddLegalizationPasses(mlir::OpPassManager& pm, bool legalize_chlo,
+                           llvm::StringRef device_type, bool prefer_tf2xla) {
+  // Run LegalizeTFPass with allow_partial_conversion = true as we verify
+  // in VerifyTFXLALegalization that full conversion happened.
+  // TODO(b/188389290): Cleanup allow_partial_conversion as a legalization
+  // parameter.
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::mhlo::createLegalizeTFPass(
+      /*allow_partial_conversion=*/true, legalize_chlo,
+      /*tf2xla_fallback_device_type=*/device_type, prefer_tf2xla));
+
+  // TODO(b/188389290): Delete this second one. We run this AGAIN because some
+  // TF ops get legalized in the first round, but createLegalizeTFPass is a
+  // staright conversion. Some ops that weren't eligible for legalization in
+  // the first pass can get legalized the second time after lowering to MHLO.
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::mhlo::createLegalizeTFPass(
+      /*allow_partial_conversion=*/true, legalize_chlo,
+      /*tf2xla_fallback_device_type=*/device_type, prefer_tf2xla));
+
+  // This has to run after legalization.
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::mhlo::CreateAdjustLayoutPass());
+
+  // This has to run after legalization to delete non legal but dead ops.
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+
+  // Run shape inference pass to propagate shapes through tensor_cast operations
+  // from static to dynamic shapes. This could be generated if the shape
+  // inference was originally missing in a TF op but the corresponding HLO op
+  // had static shape after lowering.
+  // This has to run after canonicalization.
+  pm.addPass(mlir::TF::CreateTFShapeInferencePass());
+}
+
 }  //  namespace
+
+void CreateConvertMlirToXlaHloPipeline(
+    mlir::OpPassManager& pm, llvm::StringRef device_type, bool prefer_tf2xla,
+    llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
+        custom_legalization_passes,
+    bool allow_partial_conversion) {
+  bool legalize_chlo = true;
+
+  // Note that the region-based control-flow produced here still contains
+  // function call ops which get inlined by the subsequent inliner pass.
+  pm.addPass(mlir::TF::CreateTFFunctionalControlFlowToRegions());
+  pm.addPass(mlir::createInlinerPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::TF::CreateDropWhileShapeInvariantPass());
+  // Create a replicated TensorList initialization ops for all of its uses. This
+  // pass undo some CSE because shape_inference is not correctly able to
+  // identify the shapes of TensorList initialization ops.
+  // This pass requires CanonicalizerPass before
+  // CreateTensorListOpsDecompositionPass for clean-ups.
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::TF::CreateReplicateTensorListInitOpsPass());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+  // The SCCP pass performs constant propagation across the IR, which, for
+  // example, propagates constant arguments into callee functions.
+  // TOOD(hinsu): Investigate if we really need SCCP pass before shape inference
+  // and can do with just one pass after the shape inference.
+  pm.addPass(mlir::createSCCPPass());
+  // Guarantee all functions have one use, which enables shape inference.
+  pm.addPass(mlir::TF::CreateGuaranteeAllFuncsOneUsePass());
+  // Run shape inference pass before tensorlist decomposition to get buffer
+  // shape of uninitialized TensorLists.
+  pm.addPass(mlir::TF::CreateTFShapeInferencePass());
+
+  // Run SCCP pass again as the availability of shapes may open up new
+  // opportunities for constant propagation. Note that the shape inference pass
+  // doesn't materialize new constants even if those are computed internally for
+  // the purpose of shape inference. These constants might be required by the
+  // legalization passes.
+  pm.addPass(mlir::createSCCPPass());
+
+  pm.addPass(mlir::TF::CreateTensorListOpsDecompositionPass());
+  pm.addPass(mlir::TF::CreateStackOpsDecompositionPass());
+  pm.addPass(mlir::TF::CreateTensorArrayOpsDecompositionPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::TFDevice::CreateDecomposeResourceOpsPass());
+  pm.addPass(mlir::TF::CreatePromoteResourcesToArgsPass());
+  pm.addPass(mlir::createSymbolDCEPass());
+
+  // Sink constants to regions so that ops requiring constant operands can
+  // access the constant and there is no indirection through control flow region
+  // arguments. Also, note that this pass is in MHLO but it is generic and sinks
+  // constants for all ops with regions.
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::mhlo::createSinkConstantsToControlFlowPass());
+  pm.addPass(mlir::TF::CreateTFShapeInferencePass());
+
+  // Legalize any StableHLO ops to MHLO. Bridge still doesn't use StableHLO but
+  // such ops might be present in the input from upstream like TFRT compilation.
+  // Later on, this could be merged in the legalization pass when we migrate
+  // bridge to StableHLO.
+  // TODO(b/259459405): Avoid this peculiar use through some refactoring in
+  // the the caller.
+  // This needs to happen before legalization.
+  pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
+
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::TF::CreateLowerQuantizedPass());
+  pm.addPass(mlir::mhlo::CreateLegalizeTfTypesPass());
+  pm.addPass(mlir::mhlo::createLegalizeTFModulePass(
+      /*tf2xla_fallback_device_type=*/device_type));
+
+  for (auto& target_pass : custom_legalization_passes) {
+    pm.addNestedPass<mlir::func::FuncOp>(std::move(target_pass));
+  }
+  pm.addPass(mlir::mhlo::CreateLegalizeTFCollectivePass());
+
+  // These passes are grouped together as they have to run in specific order.
+  // Passes before this can run relativley in any order, as long as they happen
+  // before legalization.
+  AddLegalizationPasses(pm, legalize_chlo, device_type, prefer_tf2xla);
+
+  // This pass operates on MHLO control flow ops so it should be legalized after
+  // the control flow ops are legalized.
+  pm.addPass(mlir::mhlo::CreateLegalizeTFCommunicationPass());
+
+  // Everything should be MHLO after this.
+  if (!allow_partial_conversion) {
+    pm.addNestedPass<mlir::func::FuncOp>(
+        mlir::mhlo::CreateVerifyTFXLALegalizationPass(legalize_chlo));
+  }
+
+  if (CanInlineFunctionsPostLegalization(device_type))
+    pm.addPass(mlir::createInlinerPass());
+
+  // In order to export to XLA, we must sink constants to control flow regions,
+  // since XLA uses functional control flow.
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::mhlo::createSinkConstantsToControlFlowPass());
+}
 
 Status RefineShapes(llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
                     mlir::ModuleOp module) {
   auto producer_or = GetTfGraphProducerVersion(module);
   if (!producer_or.ok()) return producer_or.status();
-  int64_t producer_version = producer_or.ValueOrDie();
+  int64_t producer_version = producer_or.value();
 
   llvm::SmallVector<int64_t, 16> shape_backing;
   llvm::SmallVector<llvm::ArrayRef<int64_t>, 4> arg_shapes_copy;
@@ -307,90 +507,6 @@ Status RefineShapes(llvm::ArrayRef<TensorOrResourceShape> arg_shapes,
         errors::Internal("MLIR Shape refinement failed"));
   }
   return error_handler.ConsumeStatus();
-}
-
-void CreateConvertMlirToXlaHloPipeline(
-    mlir::OpPassManager& pm, llvm::StringRef device_type, bool prefer_tf2xla,
-    llvm::MutableArrayRef<std::unique_ptr<mlir::Pass>>
-        custom_legalization_passes,
-    bool allow_partial_conversion) {
-  // Note that the region-based control-flow produced here still contains
-  // function call ops which get inlined by the subsequent inliner pass.
-  pm.addPass(mlir::TF::CreateTFFunctionalControlFlowToRegions());
-  pm.addPass(mlir::createInlinerPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      mlir::TF::CreateDropWhileShapeInvariantPass());
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
-  // The SCCP pass performs constant propagation across the IR, which, for
-  // example, propagates constant arguments into callee functions.
-  // TOOD(hinsu): Investigate if we really need SCCP pass before shape inference
-  // and can do with just one pass after the shape inference.
-  pm.addPass(mlir::createSCCPPass());
-  // Guarantee all functions have one use, which enables shape inference.
-  pm.addPass(mlir::TF::CreateGuaranteeAllFuncsOneUsePass());
-  // Run shape inference pass before tensorlist decomposition to get buffer
-  // shape of uninitialized TensorLists.
-  pm.addPass(mlir::TF::CreateTFShapeInferencePass());
-
-  // Run SCCP pass again as the availability of shapes may open up new
-  // opportunities for constant propagation. Note that the shape inference pass
-  // doesn't materialize new constants even if those are computed internally for
-  // the purpose of shape inference. These constants might be required by the
-  // legalization passes.
-  pm.addPass(mlir::createSCCPPass());
-
-  pm.addPass(mlir::TF::CreateTensorListOpsDecompositionPass());
-  pm.addPass(mlir::TF::CreateStackOpsDecompositionPass());
-  pm.addPass(mlir::TF::CreateTensorArrayOpsDecompositionPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      mlir::TFDevice::CreateDecomposeResourceOpsPass());
-  pm.addPass(mlir::TF::CreatePromoteResourcesToArgsPass());
-  pm.addPass(mlir::createSymbolDCEPass());
-  pm.addPass(mlir::TF::CreateTFShapeInferencePass());
-  // TODO(b/171426148): We cannot completely remove region to functional control
-  // flow conversion from this pipeline yet as it causes some unit tests to
-  // fail.
-  pm.addPass(mlir::TF::CreateTFRegionControlFlowToFunctional());
-  // LegalizeTFControlFlow encapsulates arguments for control flow operations
-  // with a tuple argument which break the assumption of resource lifting
-  // inside PromoteResourcesToArgs.
-  pm.addPass(mlir::mhlo::createLegalizeTFControlFlowPass());
-
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::TF::CreateLowerQuantizedPass());
-  pm.addPass(mlir::mhlo::CreateLegalizeTfTypesPass());
-  pm.addPass(mlir::mhlo::createLegalizeTFModulePass(
-      /*tf2xla_fallback_device_type=*/device_type));
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::mhlo::createLegalizeTFPass(
-      /*allow_partial_conversion=*/true, /*legalize_chlo=*/true,
-      /*tf2xla_fallback_device_type=*/device_type, prefer_tf2xla));
-  for (auto& target_pass : custom_legalization_passes) {
-    pm.addNestedPass<mlir::func::FuncOp>(std::move(target_pass));
-  }
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::mhlo::CreateAdjustLayoutPass());
-  pm.addPass(mlir::mhlo::CreateLegalizeTFCommunicationPass());
-  pm.addPass(mlir::mhlo::CreateLegalizeTFCollectivePass());
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
-  // Run shape inference pass to propagate shapes through tensor_cast operations
-  // from static to dynamic shapes. This could be generated if the shape
-  // inference was originally missing in a TF op but the corresponding HLO op
-  // had static shape after lowering.
-  pm.addPass(mlir::TF::CreateTFShapeInferencePass());
-  // Run LegalizeTFPass again because the previous legalization passes can
-  // expose more graph pruning and canonicalization opportunities that are
-  // necessary for the second LegalizeTFPass(allow_partial_conversion=false)
-  // invocation.
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::mhlo::createLegalizeTFPass(
-      /*allow_partial_conversion=*/allow_partial_conversion,
-      /*legalize_chlo=*/true,
-      /*tf2xla_fallback_device_type=*/device_type, prefer_tf2xla));
-
-  if (CanInlineFunctionsPostLegalization(device_type))
-    pm.addPass(mlir::createInlinerPass());
-
-  // In order to export to XLA, we must sink constants to control flow regions,
-  // since XLA uses functional control flow.
-  pm.addNestedPass<mlir::func::FuncOp>(
-      mlir::mhlo::createSinkConstantsToControlFlowPass());
 }
 
 Status LegalizeToHlo(mlir::ModuleOp module_op, llvm::StringRef device_type,
@@ -459,10 +575,29 @@ Status ConvertMLIRToXlaComputation(
   TF_RETURN_IF_ERROR(LegalizeToHlo(module_op, device_type, prefer_tf2xla,
                                    custom_legalization_passes));
 
+  mlir::MlirToHloConversionOptions options;
+  options.layout_preference_fn =
+      [&](const xla::Shape& xla_shape) -> StatusOr<mlir::XlaLayoutPreference> {
+    TensorShape shape;
+    TF_RETURN_IF_ERROR(XLAShapeToTensorShape(xla_shape, &shape));
+    TF_ASSIGN_OR_RETURN(DataType dtype, EncodePrimitiveTypeAsDataType(
+                                            xla_shape.element_type()));
+    return shape_determination_fns.layout_preference_fn(shape, dtype,
+                                                        std::nullopt);
+  };
+  options.shape_representation_fn =
+      [&](const xla::Shape& xla_shape, bool fast_mem,
+          mlir::XlaLayoutPreference layout_preference) -> StatusOr<xla::Shape> {
+    TensorShape shape;
+    TF_RETURN_IF_ERROR(XLAShapeToTensorShape(xla_shape, &shape));
+    TF_ASSIGN_OR_RETURN(DataType dtype, EncodePrimitiveTypeAsDataType(
+                                            xla_shape.element_type()));
+    return shape_determination_fns.shape_representation_fn(
+        shape, dtype, fast_mem, layout_preference);
+  };
   xla::HloProto hlo_proto;
-  TF_RETURN_IF_ERROR(mlir::ConvertMlirHloToHlo(module_op, &hlo_proto,
-                                               use_tuple_args, return_tuple,
-                                               shape_determination_fns));
+  TF_RETURN_IF_ERROR(mlir::ConvertMlirHloToHlo(
+      module_op, &hlo_proto, use_tuple_args, return_tuple, options));
   *xla_computation = xla::XlaComputation(hlo_proto.hlo_module());
   return OkStatus();
 }
@@ -635,14 +770,14 @@ static StatusOr<std::vector<int>> RewriteWithArgs(
       llvm::SmallVector<int64_t, 4> resource_subtype_shape(
           resource_shape.begin(), resource_shape.end());
       auto resource_subtype =
-          mlir::RankedTensorType::get(resource_subtype_shape, element_type);
+          GetTypeFromTFTensorShape(resource_subtype_shape, element_type);
       auto resource_type =
           mlir::TF::ResourceType::get({resource_subtype}, builder.getContext());
 
       auto tensor_type = mlir_arg.getType().cast<mlir::TensorType>();
       if (tensor_type.hasRank()) {
         mlir_arg.setType(
-            mlir::RankedTensorType::get(tensor_type.getShape(), resource_type));
+            GetTypeFromTFTensorShape(tensor_type.getShape(), resource_type));
       } else {
         mlir_arg.setType(mlir::UnrankedTensorType::get(resource_type));
       }

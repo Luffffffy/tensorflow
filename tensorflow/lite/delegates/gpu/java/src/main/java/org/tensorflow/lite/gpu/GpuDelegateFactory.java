@@ -15,7 +15,6 @@ limitations under the License.
 
 package org.tensorflow.lite.gpu;
 
-import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import org.tensorflow.lite.Delegate;
@@ -43,6 +42,26 @@ public class GpuDelegateFactory implements DelegateFactory {
      */
     public static final int INFERENCE_PREFERENCE_SUSTAINED_SPEED = 1;
 
+    /** Which GPU backend to select. */
+    public enum GpuBackend {
+      /** Try OpenCL first. Fall back to OpenGL if it's not available. */
+      UNSET(0),
+      /** Enforces execution with Open CL. */
+      OPENCL(1),
+      /** Enforces execution with Open GL. */
+      OPENGL(2);
+      private final int value;
+
+      GpuBackend(int value) {
+        this.value = value;
+      }
+
+      /** int value of this enum. */
+      public int value() {
+        return value;
+      }
+    }
+
     /**
      * Sets whether precision loss is allowed.
      *
@@ -50,7 +69,6 @@ public class GpuDelegateFactory implements DelegateFactory {
      *     values, process in FP16. When `false`, computations are carried out in 32-bit floating
      *     point.
      */
-    @CanIgnoreReturnValue
     public Options setPrecisionLossAllowed(boolean precisionLossAllowed) {
       this.precisionLossAllowed = precisionLossAllowed;
       return this;
@@ -63,7 +81,6 @@ public class GpuDelegateFactory implements DelegateFactory {
      *
      * @param quantizedModelsAllowed When {@code true} (default), the GPU may run quantized models.
      */
-    @CanIgnoreReturnValue
     public Options setQuantizedModelsAllowed(boolean quantizedModelsAllowed) {
       this.quantizedModelsAllowed = quantizedModelsAllowed;
       return this;
@@ -75,7 +92,6 @@ public class GpuDelegateFactory implements DelegateFactory {
      * @param preference One of `INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER` (default),
      *     `INFERENCE_PREFERENCE_SUSTAINED_SPEED`.
      */
-    @CanIgnoreReturnValue
     public Options setInferencePreference(int preference) {
       this.inferencePreference = preference;
       return this;
@@ -94,10 +110,17 @@ public class GpuDelegateFactory implements DelegateFactory {
      * @param modelToken The token to be used to identify the model. Caller is responsible to ensure
      *     the token is unique to the model graph and data.
      */
-    @CanIgnoreReturnValue
     public Options setSerializationParams(String serializationDir, String modelToken) {
       this.serializationDir = serializationDir;
       this.modelToken = modelToken;
+      return this;
+    }
+
+    /**
+     * Sets the GPU Backend.
+     */
+    public Options setForceBackend(GpuBackend forceBackend) {
+      this.forceBackend = forceBackend;
       return this;
     }
 
@@ -121,11 +144,16 @@ public class GpuDelegateFactory implements DelegateFactory {
       return modelToken;
     }
 
+    public GpuBackend getForceBackend() {
+      return forceBackend;
+    }
+
     private boolean precisionLossAllowed = true;
     boolean quantizedModelsAllowed = true;
     int inferencePreference = INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER;
     String serializationDir = null;
     String modelToken = null;
+    GpuBackend forceBackend = GpuBackend.UNSET;
   }
 
   public GpuDelegateFactory() {

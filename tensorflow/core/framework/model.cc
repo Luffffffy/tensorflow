@@ -46,50 +46,77 @@ constexpr uint64_t kGapDurationThresholdUsec = 10000000;  // 10 seconds
 // In outlier computation, points that are larger than `kOutlierSigmas` standard
 // deviations are considered outliers.
 constexpr double kOutlierSigmas = 2.0;
+// In target time computation, compute the target time as `kTargetTimeSigmas`
+// from the mean of the gap time distribution to account for variance in
+// processing time. For example, a value of 1 would mean that the target time is
+// faster than 84% of the gap times.
+constexpr double kTargetTimeSigmas = 1.0;
 
 // A class to prune outliers given a set of points. To use it, instantiate an
 // object and call the `GetCleanPoints()` method.
-class OutlierPruner {
+class TargetTimeCalculator {
  public:
-  explicit OutlierPruner(const std::vector<uint64_t>& points)
-      : points_(points.begin(), points.end()) {}
+  explicit TargetTimeCalculator(const std::vector<uint64_t>& points_usec,
+                                double outlier_sigmas,
+                                double target_time_sigmas)
+      : points_usec_(points_usec.begin(), points_usec.end()),
+        outlier_sigmas_(outlier_sigmas),
+        target_time_sigmas_(target_time_sigmas) {}
 
-  // Returns the remaining points after removing outliers from the original set
-  // of points.
-  std::vector<uint64_t> GetCleanPoints() {
-    if (points_.empty()) {
-      return points_;
+  double GetTargetTimeUsec() const {
+    if (points_usec_.empty()) {
+      return 0.0;
     }
-    // Compute the outlier threshold
     double mean;
     double standard_deviation;
-    ComputeMeanAndStandardDeviation(&mean, &standard_deviation);
-    double threshold = mean + standard_deviation * kOutlierSigmas;
-    std::vector<uint64_t> clean_points;
-    for (auto point : points_) {
-      if (static_cast<double>(point) > threshold) {
-        continue;
-      }
-      clean_points.push_back(point);
+    ComputeMeanAndStandardDeviation(points_usec_, &mean, &standard_deviation);
+    // Remove outliers.
+    std::vector<uint64_t> clean_points_usec =
+        GetCleanPoints(points_usec_, mean, standard_deviation);
+    if (clean_points_usec.empty()) {
+      return 0.0;
     }
-    return clean_points;
+    // Compute mean and standard deviation after outliers are removed.
+    ComputeMeanAndStandardDeviation(clean_points_usec, &mean,
+                                    &standard_deviation);
+    // Compute target time.
+    return mean - standard_deviation * target_time_sigmas_;
   }
 
  private:
-  void ComputeMeanAndStandardDeviation(double* mean,
-                                       double* standard_deviation) {
-    uint64_t sum = std::accumulate(points_.begin(), points_.end(), 0);
-    *mean = static_cast<double>(sum) / static_cast<double>(points_.size());
+  // Returns the remaining points after removing outliers from the original set
+  // of points.
+  std::vector<uint64_t> GetCleanPoints(const std::vector<uint64_t>& points_usec,
+                                       double mean,
+                                       double standard_deviation) const {
+    double threshold = mean + standard_deviation * outlier_sigmas_;
+    std::vector<uint64_t> clean_points_usec;
+    for (auto point : points_usec) {
+      if (static_cast<double>(point) > threshold) {
+        continue;
+      }
+      clean_points_usec.push_back(point);
+    }
+    return clean_points_usec;
+  }
+
+  void ComputeMeanAndStandardDeviation(const std::vector<uint64_t>& points_usec,
+                                       double* mean,
+                                       double* standard_deviation) const {
+    uint64_t sum = std::accumulate(points_usec.begin(), points_usec.end(), 0);
+    *mean = static_cast<double>(sum) / static_cast<double>(points_usec.size());
     double accum = 0.0;
-    for (auto point : points_) {
+    for (auto point : points_usec) {
       accum += (static_cast<double>(point) - *mean) *
                (static_cast<double>(point) - *mean);
     }
-    *standard_deviation = std::sqrt(accum / (points_.size() - 1));
+    *standard_deviation = std::sqrt(accum / (points_usec.size() - 1));
   }
 
   // Points to cluster.
-  std::vector<uint64_t> points_;
+  std::vector<uint64_t> points_usec_;
+  double outlier_sigmas_;
+  double target_time_sigmas_;
 };
 
 // A priority queue that holds stage roots where the top of the priority queue
@@ -106,9 +133,7 @@ class ModelTimingPriorityQueue {
       DCHECK(model_timing.GetTiming(root.get()) != nullptr);
       const ModelTiming::NodeTiming* root_timing =
           model_timing.GetTiming(root.get());
-      stage_roots_queue_.emplace(
-          root_timing->total_time_nsec * root_timing->pipeline_ratio,
-          root.get());
+      Push(root.get(), *root_timing);
     }
   }
 
@@ -2112,17 +2137,38 @@ Status Node::FromProto(ModelProto::Node node_proto,
   return FromProtoHelper(node_proto, *node);
 }
 
-Model::Model() : optimization_period_ms_(kOptimizationPeriodMinMs) {
+Model::Model()
+    : optimization_period_ms_(kOptimizationPeriodMinMs),
+      safe_to_collect_metrics_(std::make_shared<GuardedBool>(true)) {
   model_gauge_cell_ = metrics::GetTFDataModelGauge(
       strings::StrCat(reinterpret_cast<uint64>(this)));
-  model_gauge_cell_->Set([&]() { return DebugString(); });
+  // Capture `safe_to_collect_metrics_` by value to avoid use-after-free issues
+  // when the callback is invoked after the model has been destroyed.
+  model_gauge_cell_->Set(
+      [this, my_safe_to_collect_metrics = this->safe_to_collect_metrics_]() {
+        mutex_lock l(my_safe_to_collect_metrics->mu);
+        if (!my_safe_to_collect_metrics->val) {
+          return std::string();
+        }
+        {
+          tf_shared_lock snapshot_lock(mu_);
+          if (snapshot_ != nullptr) {
+            ModelProto model_proto;
+            Status s = ModelToProtoHelper(snapshot_, &model_proto);
+            if (s.ok()) {
+              *model_proto.mutable_optimization_params() = optimization_params_;
+              return model_proto.DebugString();
+            }
+            LOG(WARNING) << s.error_message();
+          }
+        }
+        return DebugString();
+      });
 }
 
 Model::~Model() {
-  // Before the model is destroyed, we record an empty string in the gauge to
-  // prevent race condition where the gauge callback is called after the Model
-  // is destroyed.
-  model_gauge_cell_->Set([]() { return std::string(); });
+  mutex_lock l(safe_to_collect_metrics_->mu);
+  safe_to_collect_metrics_->val = false;
 }
 
 void Model::AddNode(Node::Factory factory, const string& name,
@@ -2202,8 +2248,15 @@ void Model::Optimize(AutotuneAlgorithm algorithm, int64_t cpu_budget,
                  "optimization.";
       return;
   }
-  if (experiment_ == "autotune_buffer_optimization") {
+  if (experiments_.contains("autotune_buffer_optimization")) {
     OptimizeBuffers(snapshot, optimization_params.ram_budget());
+  }
+  {
+    // Save the snapshot of the model proto including the parameters used by
+    // autotune. This will be used as the model proto returned in `tfstreamz`.
+    mutex_lock l(mu_);
+    snapshot_ = snapshot;
+    optimization_params_ = optimization_params;
   }
 }
 
@@ -2417,7 +2470,8 @@ void Model::OptimizeHillClimbHelper(
 
   // Skip buffer size optimization if we are running the new buffering
   // algorithm.
-  bool skip_buffer_sizes = (experiment_ == "autotune_buffer_optimization");
+  bool skip_buffer_sizes =
+      (experiments_.contains("autotune_buffer_optimization"));
   if (skip_buffer_sizes) {
     constexpr float TEN_MINUTES = 60.0 * 10.0;
     LOG_EVERY_N_SEC(INFO, TEN_MINUTES)
@@ -2489,17 +2543,13 @@ double Model::ComputeTargetTimeNsec() {
   if (gap_times_usec_.empty()) {
     return 0.0;
   }
-  // Remove outliers.
-  std::vector<uint64_t> clean_gap_times_usec =
-      OutlierPruner({gap_times_usec_.begin(), gap_times_usec_.end()})
-          .GetCleanPoints();
-  if (clean_gap_times_usec.empty()) {
-    return 0.0;
+  double target_time_sigmas = 0.0;
+  if (experiments_.contains("stage_based_autotune_v2")) {
+    target_time_sigmas = kTargetTimeSigmas;
   }
-  // Compute mean after outliers are removed.
-  double sum_gap_time_usec = std::accumulate(clean_gap_times_usec.begin(),
-                                             clean_gap_times_usec.end(), 0);
-  return sum_gap_time_usec / static_cast<double>(clean_gap_times_usec.size()) *
+  return TargetTimeCalculator({gap_times_usec_.begin(), gap_times_usec_.end()},
+                              kOutlierSigmas, target_time_sigmas)
+             .GetTargetTimeUsec() *
          1.0e3;
 }
 
@@ -2535,7 +2585,7 @@ void Model::OptimizeStageBasedParallelism(
     return;
   }
   NodeParallelismParameters node_parallelism;
-  std::pair<double, Node*> critical_root = critical_root_status.ValueOrDie();
+  std::pair<double, Node*> critical_root = critical_root_status.value();
   while (critical_root.first > target_time_nsec) {
     Parameter* parallelism_parameter =
         node_parallelism.Get(critical_root.second);
@@ -2550,20 +2600,31 @@ void Model::OptimizeStageBasedParallelism(
         optimization_params.ram_budget()) {
       // Increasing the parallelism by 1 exceeded ram budget. Reduce it back and
       // stop optimization because we cannot improve the most critical stage.
+      // There is also a decent chance that the current optimization iteration
+      // is under-optimized. For that reason, return immediately without
+      // updating the parameter state values.
       parallelism_parameter->value -= 1.0;
-      break;
+      return;
     }
     // Compute the new total time and put the node back in the queue after its
     // parallelism value has been increased by 1.
     model_timing.ComputeNodeTotalTime(*critical_root.second);
-    priority_queue.Push(critical_root.second,
-                        *model_timing.GetTiming(critical_root.second));
+    const ModelTiming::NodeTiming* root_timing =
+        model_timing.GetTiming(critical_root.second);
+    // If timing has not improved, stop optimizing.
+    if (critical_root.first <=
+        (root_timing->total_time_nsec * root_timing->pipeline_ratio)) {
+      parallelism_parameter->value -= 1.0;
+      break;
+    }
+    // Push it back to the priority queue.
+    priority_queue.Push(critical_root.second, *root_timing);
     // Get the next critical stage root.
     critical_root_status = priority_queue.PopSlowestStageRoot();
     if (!critical_root_status.ok()) {
       break;
     }
-    critical_root = critical_root_status.ValueOrDie();
+    critical_root = critical_root_status.value();
   }
   UpdateStateValues(&tunable_parameters);
 }
@@ -2836,7 +2897,13 @@ void ModelTiming::ComputePipelineRatios(const Node::NodeVector& bfs_nodes) {
     if (node->output() != nullptr || timing_nodes_.contains(node->output())) {
       const auto& output_timing = timing_nodes_[node->output()];
       parent_pipeline_ratio = output_timing.pipeline_ratio;
-      parent_ratio = node->output()->Ratio();
+      if (node->num_elements() > 0 && node->output()->num_elements() > 0) {
+        parent_ratio = static_cast<double>(node->num_elements()) /
+                       static_cast<double>(node->output()->num_elements() +
+                                           node->output()->buffered_elements());
+      } else {
+        parent_ratio = node->output()->Ratio();
+      }
       if (parent_ratio <= 0.0) {
         // Parent ratio is unknown, we use 1.0 as a guess.
         parent_ratio = 1.0;
@@ -2860,27 +2927,52 @@ void ModelTiming::ComputeNonAsyncInterleaveManyTotalTime(const Node& node) {
     DCHECK(timing_nodes_.contains(input.get()))
         << "Input " << input->long_name() << " of node " << node.long_name()
         << " has no timing node.";
-
-    input_total_time_nsec += timing_nodes_[input.get()].total_time_nsec;
+    // We use the dynamic ratio of `num_elements` of input over that of output
+    // rather than the static `Ratio()` computed based on the type of the node
+    // (e.g. batch size of a `Batch`) because the static value can be inaccurate
+    // for nodes like an interleave node where the ratio of the first input is
+    // different from the ratio of the interleaved inputs. Moreover, this
+    // dynamic quantity should closely match the static one for nodes other than
+    // interleave nodes and is more generic since its value is specific to an
+    // input to output pair rather than a single numnber for the output node.
+    input_total_time_nsec +=
+        timing_nodes_[input.get()].total_time_nsec *
+        static_cast<double>(input->num_elements()) /
+        static_cast<double>(node.num_elements() + node.buffered_elements());
   }
   node_timing.total_time_nsec =
-      node_timing.self_time_nsec + input_total_time_nsec * node.Ratio();
+      node_timing.self_time_nsec + input_total_time_nsec;
 }
 
 void ModelTiming::ComputeAsyncInterleaveManyTotalTime(const Node& node) {
   DCHECK(timing_nodes_.contains(&node));
   auto& node_timing = timing_nodes_[&node];
+  node_timing.total_time_nsec =
+      node_timing.self_time_nsec +
+      ComputeAsyncInterleaveManyFirstInputTotalTime(node) +
+      ComputeAsyncInterleaveManyInterleavedInputsTotalTime(node);
+}
+
+double ModelTiming::ComputeAsyncInterleaveManyInterleavedInputsTotalTime(
+    const Node& node) {
+  DCHECK(timing_nodes_.contains(&node));
   double max_input_total_time_nsec = 0.0;
   double sum_input_throughput = 0.0;
   auto inputs = node.inputs();
   // `ParallelInterleave` is often used to interleave processing of datasets
   // generated from the first input, e.g. reading from IO where the first input
-  // has the list of all filenames. The first input is typically not the
-  // bottleneck. We exclude the timing of the first input in the throughput
-  // computation of the remaining input. It also excluded from the total time
-  // computation of the async interleave node.
-  auto input = inputs.begin();
-  while ((input = std::next(input)) != inputs.end()) {
+  // has the list of all filenames. We skip it here to compute the total time of
+  // the other inputs.
+  auto input = std::next(inputs.begin());
+  // `num_active_inputs` holds the number of inputs that the
+  // `ParallelInterleave` is reading from, not including those that are warm
+  // starting, which can be detected by checking the value of `autotune()`. It
+  // also does not count async inputs because they would be in their own
+  // stages. This number is typically the same as `cycle_length`. It will be
+  // used below to scale the throughput of inputs if `cycle_length` is smaller
+  // than `num_active_inputs`.
+  int num_active_inputs = 0;
+  for (; input != inputs.end(); ++input) {
     if ((*input)->IsAsync()) {
       continue;
     }
@@ -2896,23 +2988,68 @@ void ModelTiming::ComputeAsyncInterleaveManyTotalTime(const Node& node) {
     if (input_total_time_nsec > 0.0) {
       sum_input_throughput += 1.0 / input_total_time_nsec;
     }
+    ++num_active_inputs;
   }
-  double input_total_time_nsec = 0.0;
-  auto deterministic = node.ParameterValue(kDeterministic);
+  auto parallelism_param = node.ParameterValue(kParallelism);
+  double parallelism = 1.0;
+  if (parallelism_param.ok()) {
+    parallelism = parallelism_param.value();
+  }
   // After cl/445005635, there should always be `deterministic` parameter for an
   // ASYNC_INTERLEAVE_MANY node. The "not-ok" check is to allow the code to work
-  // with protos saved and restored before that CL.
-  if (!deterministic.ok() || deterministic.ValueOrDie() == 1.0) {
-    // If deterministic = true, then the total time is `1/worst input throughput
-    // * cycle_length`, or `max input total time / cycle_length`.
-    input_total_time_nsec = max_input_total_time_nsec * node.Ratio();
+  // with protos saved and restored before that CL. Similarly for `cycle_length`
+  // with cl/436244658.
+  auto deterministic_param = node.ParameterValue(kDeterministic);
+  bool deterministic = false;
+  if (deterministic_param.ok()) {
+    deterministic = deterministic_param.value() == 1.0;
+  }
+  auto cycle_length_param = node.ParameterValue(kCycleLength);
+  double cycle_length = num_active_inputs;
+  if (cycle_length_param.ok()) {
+    cycle_length = cycle_length_param.value();
+  }
+  double input_total_time_nsec = 0.0;
+  if (deterministic) {
+    // If deterministic = true, then the total time is `max input total time /
+    // min(parallelism, cycle_length)`.
+    input_total_time_nsec =
+        max_input_total_time_nsec / std::min(parallelism, cycle_length);
   } else if (sum_input_throughput > 0.0) {
     // If deterministic = false, then the total time is
-    // `1/sum_input_throughput`.
+    // `1/sum_input_throughput`. Scale the throughput according to `parallelism`
+    // and `cycle_length` if `cycle_length` or `parallelism` is smaller than
+    // active inputs. `cycle_length` and `parallelism` could theoretically be
+    // larger than active inputs when some inputs are async and some are sync.
+    if (std::min(cycle_length, parallelism) < num_active_inputs) {
+      sum_input_throughput *=
+          std::min(parallelism, cycle_length) / num_active_inputs;
+    }
     input_total_time_nsec = 1.0 / sum_input_throughput;
   }
-  node_timing.total_time_nsec =
-      node_timing.self_time_nsec + input_total_time_nsec;
+  return input_total_time_nsec;
+}
+
+double ModelTiming::ComputeAsyncInterleaveManyFirstInputTotalTime(
+    const Node& node) {
+  DCHECK(timing_nodes_.contains(&node));
+  // `ParallelInterleave` is often used to interleave processing of datasets
+  // generated from the first input, e.g. reading from IO where the first input
+  // has the list of all filenames. The contribution of the first input total
+  // time is proportional to the number of elements it produces over the number
+  // elements the parallel interleave node produces.
+  auto inputs = node.inputs();
+  auto first_input = inputs.begin();
+  if (first_input == inputs.end() || (*first_input)->IsAsync() ||
+      !(*first_input)->autotune() || (*first_input)->num_elements() <= 0) {
+    return 0.0;
+  }
+  DCHECK(timing_nodes_.contains((*first_input).get()))
+      << "Input " << (*first_input)->long_name() << " of node "
+      << node.long_name() << " has no timing node.";
+  return timing_nodes_[(*first_input).get()].total_time_nsec *
+         (*first_input)->num_elements() /
+         (node.num_elements() + node.buffered_elements());
 }
 
 void ModelTiming::ComputeTotalTimes(const Node::NodeVector& reverse_bfs_nodes) {

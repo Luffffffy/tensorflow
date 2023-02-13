@@ -15,17 +15,22 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/gpu/cudnn_vectorize_convolutions.h"
 
+#include <optional>
+#include <string>
+#include <vector>
+
 #include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_casting_utils.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instructions.h"
+#include "tensorflow/compiler/xla/service/gpu/backend_configs.pb.h"
+#include "tensorflow/compiler/xla/service/gpu/cublas_cudnn.h"
 #include "tensorflow/compiler/xla/service/gpu/cudnn_support_utils.h"
-#include "tensorflow/compiler/xla/service/gpu/ir_emission_utils.h"
 #include "tensorflow/compiler/xla/service/gpu/stream_executor_util.h"
-#include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
-#include "tensorflow/compiler/xla/service/hlo_instructions.h"
-#include "tensorflow/stream_executor/device_description.h"
-#include "tensorflow/stream_executor/dnn.h"
+#include "tensorflow/compiler/xla/shape_util.h"
 
 namespace xla {
 namespace gpu {
+namespace {
 
 // Finds convolutions that this pass may be able to transform, namely int8_t
 // cudnn forward or forward-bias-activation convolutions
@@ -91,7 +96,7 @@ static StatusOr<HloComputation*> BuilderToHloComputation(
 // after `dim`.
 static XlaOp SplitAtDim(XlaOp instr, int64_t dim, int64_t vect_size) {
   XlaBuilder& b = *instr.builder();
-  Shape shape = b.GetShape(instr).ValueOrDie();
+  Shape shape = b.GetShape(instr).value();
   DimensionVector new_dims(shape.dimensions().begin(),
                            shape.dimensions().end());
   CHECK_EQ(new_dims[dim] % vect_size, 0);
@@ -140,7 +145,7 @@ static XlaOp MoveDim(XlaOp instr, int64_t src, int64_t dst) {
 static XlaOp RevectorizeInstr(XlaOp instr, int64_t dim, int64_t vect_dim,
                               int64_t vect_size) {
   XlaBuilder& b = *instr.builder();
-  Shape shape = b.GetShape(instr).ValueOrDie();
+  Shape shape = b.GetShape(instr).value();
   auto size = [&](int64_t d) { return shape.dimensions(d); };
 
   CHECK_LE(size(vect_dim), vect_size);
@@ -175,7 +180,7 @@ static XlaOp RevectorizeInstr(XlaOp instr, int64_t dim, int64_t vect_dim,
 static XlaOp UnrevectorizeInstr(XlaOp instr, int64_t dim, int64_t vect_dim,
                                 int64_t orig_vect_size) {
   XlaBuilder& b = *instr.builder();
-  Shape shape = b.GetShape(instr).ValueOrDie();
+  Shape shape = b.GetShape(instr).value();
   auto size = [&](int64_t d) { return shape.dimensions(d); };
 
   CHECK_GE(size(vect_dim), orig_vect_size);
@@ -249,6 +254,37 @@ static ConvolutionDimensionNumbers VectorizeDnums(
   return dnums;
 }
 
+// Reorders the convolution's filter and bias (if present) according to
+// cudnnReorderFilterAndBias.  Also marks that the filter + bias are reordered
+// in the conv's backend-config.
+Status ReorderInt8NchwVect(HloCustomCallInstruction* conv, XlaOp* operands) {
+  // Update convolution backend config.
+  TF_ASSIGN_OR_RETURN(auto config,
+                      conv->backend_config<CudnnConvBackendConfig>());
+  config.set_reordered_int8_nchw_vect(true);
+  TF_RETURN_IF_ERROR(conv->set_backend_config(config));
+
+  XlaBuilder& builder = *operands->builder();
+  Shape filter_shape = builder.GetShape(operands[1]).value();
+
+  if (conv->operand_count() > 2) {
+    // Reorder filter and bias.
+    Shape bias_shape = builder.GetShape(operands[2]).value();
+    XlaOp reorder = CustomCall(
+        &builder, std::string(kCudnnConvReorderFilterAndBiasCallTarget),
+        {operands[1], operands[2]},
+        ShapeUtil::MakeTupleShape({filter_shape, bias_shape}));
+    operands[1] = GetTupleElement(reorder, 0);
+    operands[2] = GetTupleElement(reorder, 1);
+  } else {
+    // Reorder just the filter.
+    operands[1] =
+        CustomCall(&builder, std::string(kCudnnConvReorderFilterCallTarget),
+                   {operands[1]}, filter_shape);
+  }
+  return OkStatus();
+}
+
 // Tries to vectorize an already-vectorized convolution.
 //
 // That is, given a convolution of shape [N, C/k, H, W, k], changes it to have
@@ -309,6 +345,8 @@ static StatusOr<bool> TryRevectorizeConv(
   // We use XlaBuilder because it's a lot easier to get these tricky
   // reshape/transposes correct using that API.
   XlaBuilder b(absl::StrCat(conv->name(), ".revectorized"));
+  b.SetOpMetadata(conv->metadata());
+
   absl::InlinedVector<XlaOp, 4> new_operands = {
       RevectorizeInstr(Parameter(&b, 0, conv->operand(0)->shape(), "input"),
                        dnums.input_feature_dimension(), *input_vect_dim,
@@ -331,6 +369,13 @@ static StatusOr<bool> TryRevectorizeConv(
     return InvalidArgument(
         "Don't understand a conv with more than 4 arguments: %s",
         conv->ToString());
+  }
+
+  // Reorder filter and bias for the int8x32 convolutions.
+  const auto& debug_options = conv->GetModule()->config().debug_options();
+  if (input_shape.element_type() == xla::S8 && vect_size == 32 &&
+      debug_options.xla_gpu_enable_cudnn_int8x32_convolution_reordering()) {
+    TF_RETURN_IF_ERROR(ReorderInt8NchwVect(conv, new_operands.data()));
   }
 
   // The custom-call returns a tuple (new_output_shape, u8[0]), where the second
@@ -433,6 +478,7 @@ static StatusOr<bool> TryVectorizeConv(
   // We use XlaBuilder because it's a lot easier to get these tricky
   // reshape/transposes correct using that API.
   XlaBuilder b(absl::StrCat(conv->name(), ".revectorized"));
+  b.SetOpMetadata(conv->metadata());
 
   absl::InlinedVector<XlaOp, 4> new_operands = {
       SplitAtDim(Parameter(&b, 0, conv->operand(0)->shape(), "input"),
@@ -454,6 +500,13 @@ static StatusOr<bool> TryVectorizeConv(
     return InvalidArgument(
         "Don't understand a conv with more than 4 arguments: %s",
         conv->ToString());
+  }
+
+  // Reorder filter and bias for the int8x32 convolutions.
+  const auto& debug_options = conv->GetModule()->config().debug_options();
+  if (input_shape.element_type() == xla::S8 && vect_size == 32 &&
+      debug_options.xla_gpu_enable_cudnn_int8x32_convolution_reordering()) {
+    TF_RETURN_IF_ERROR(ReorderInt8NchwVect(conv, new_operands.data()));
   }
 
   // The custom-call returns a tuple (new_output_shape, u8[0]), where the second
@@ -491,6 +544,8 @@ static StatusOr<bool> TryVectorizeConv(
                                        new_conv_comp)));
   return true;
 }
+
+}  // namespace
 
 StatusOr<bool> CudnnVectorizeConvolutions::Run(
     HloModule* module,

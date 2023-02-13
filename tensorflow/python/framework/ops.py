@@ -23,8 +23,6 @@ import types
 from absl import app
 
 import numpy as np
-import six
-from six.moves import map  # pylint: disable=redefined-builtin
 
 from tensorflow.core.framework import attr_value_pb2
 from tensorflow.core.framework import full_type_pb2
@@ -52,7 +50,6 @@ from tensorflow.python.framework import cpp_shape_inference_pb2
 from tensorflow.python.framework import device as pydev
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
-from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import registry
 from tensorflow.python.framework import tensor_conversion_registry
 from tensorflow.python.framework import tensor_shape
@@ -69,7 +66,6 @@ from tensorflow.python.util import deprecation
 from tensorflow.python.util import dispatch
 from tensorflow.python.util import function_utils
 from tensorflow.python.util import lock_util
-from tensorflow.python.util import memory
 from tensorflow.python.util import object_identity
 from tensorflow.python.util import tf_contextlib
 from tensorflow.python.util import tf_stack
@@ -106,7 +102,7 @@ _control_flow_api_gauge = monitoring.BoolGauge(
     "/tensorflow/api/enable_control_flow_v2",
     "Whether enable_control_flow_v2() is called.")
 
-_tf_function_api_guage = monitoring.BoolGauge(
+_tf_function_api_gauge = monitoring.BoolGauge(
     "/tensorflow/api/tf_function",
     "Whether tf.function() is used.")
 
@@ -288,9 +284,8 @@ def disable_tensor_equality():
   Tensor._USE_EQUALITY = False  # pylint: disable=protected-access
 
 
-# TODO(mdan): This object should subclass Symbol, not just Tensor.
 @tf_export("Tensor", "experimental.numpy.ndarray", v1=["Tensor"])
-class Tensor(internal.NativeObject, core_tf_types.Tensor):
+class Tensor(internal.NativeObject, core_tf_types.Symbol):
   """A `tf.Tensor` represents a multidimensional array of elements.
 
   All elements are of a single known data type.
@@ -512,6 +507,11 @@ class Tensor(internal.NativeObject, core_tf_types.Tensor):
     else:
       shape_vec = [None if d == -1 else d for d in shape_vec]
       return tensor_shape.TensorShape(shape_vec)
+
+  @property
+  def ndim(self):
+    """Returns the number of Tensor dimensions."""
+    return self.shape.ndims
 
   @property
   def _shape(self):
@@ -1038,13 +1038,19 @@ class Tensor(internal.NativeObject, core_tf_types.Tensor):
     return object_identity.Reference(self)
 
   def __tf_tracing_type__(self, signature_context):
-    return tensor_spec.TensorSpec(
+    spec = tensor_spec.TensorSpec(
         self.shape, self.dtype).__tf_tracing_type__(signature_context)
+    # TODO(b/263894631): Store handle data in the TensorSpec itself. Once
+    # implemented, the following section under the if condition can be removed.
+    if self.dtype == dtypes.resource or self.dtype == dtypes.variant:
+      handle_data = get_handle_data(self)
+      signature_context.add_handledata(id(spec), handle_data)
+    return spec
 
 
 # TODO(agarwal): consider getting rid of this.
 # TODO(mdan): This object should not subclass ops.Tensor.
-class _EagerTensorBase(Tensor):
+class _EagerTensorBase(Tensor, core_tf_types.Value):
   """Base class for EagerTensor."""
 
   # __complex__, __int__, __float__ and __index__ may copy the tensor to CPU and
@@ -1272,12 +1278,8 @@ class _EagerTensorBase(Tensor):
     """The shape of the tensor as a list."""
     return list(self._shape_tuple())
 
-  @property
-  def ndim(self):
-    """Returns the number of Tensor dimensions."""
-    return self.shape.ndims
-
-  @deprecation.deprecated(None, "Use tf.identity instead.")
+  @deprecation.deprecated(
+      None, "Use tf.identity with explicit device placement instead.")
   def cpu(self):
     """A copy of this Tensor with contents backed by host memory."""
     return self._copy(context.context(), "CPU:0")
@@ -1552,7 +1554,7 @@ def pack_eager_tensors(tensors, ctx=None):
   if ctx is None:
     ctx = context.context()
 
-  # Propogate handle data for resource variables
+  # Propagate handle data for resource variables
   packed_tensor = ctx.pack_eager_tensors(tensors)
   if handle_data is not None:
     packed_tensor._handle_data = handle_data  # pylint: disable=protected-access
@@ -1894,7 +1896,7 @@ def _NodeDef(op_type, name, attrs=None):
   node_def = node_def_pb2.NodeDef(op=compat.as_bytes(op_type),
                                   name=compat.as_bytes(name))
   if attrs:
-    for k, v in six.iteritems(attrs):
+    for k, v in attrs.items():
       node_def.attr[k].CopyFrom(v)
   return node_def
 
@@ -2096,7 +2098,7 @@ class Operation(object):
         control_op = None
         if isinstance(c, Operation):
           control_op = c
-        elif isinstance(c, (Tensor, IndexedSlices)):
+        elif isinstance(c, (Tensor, internal.IndexedSlices)):
           control_op = c.op
         else:
           raise TypeError(f"Control input must be an Operation, "
@@ -2115,7 +2117,8 @@ class Operation(object):
 
     # Removes this frame from the Python traceback.
     # We adjust stacklevel directly to avoid triggering serialization.
-    self.traceback._stacklevel += 1  # pylint: disable=protected-access
+    if self.traceback is not None:
+      self.traceback._stacklevel += 1  # pylint: disable=protected-access
 
   @classmethod
   def _from_c_op(cls, c_op, g):
@@ -2519,8 +2522,8 @@ class Operation(object):
     if self._inputs_val is None:
       # pylint: disable=protected-access
       self._inputs_val = tuple(
-          map(self.graph._get_tensor_by_tf_output,
-              pywrap_tf_session.GetOperationInputs(self._c_op)))
+          self.graph._get_tensor_by_tf_output(i)
+          for i in pywrap_tf_session.GetOperationInputs(self._c_op))
       # pylint: enable=protected-access
     return self._inputs_val
 
@@ -2818,7 +2821,7 @@ class RegisterGradient(object):
     Raises:
       TypeError: If `op_type` is not string.
     """
-    if not isinstance(op_type, six.string_types):
+    if not isinstance(op_type, str):
       raise TypeError("op_type must be a string")
     self._op_type = op_type
 
@@ -2858,7 +2861,7 @@ def no_gradient(op_type):
     TypeError: If `op_type` is not a string.
 
   """
-  if not isinstance(op_type, six.string_types):
+  if not isinstance(op_type, str):
     raise TypeError("op_type must be a string")
   gradient_registry.register(None, op_type)
 
@@ -2989,12 +2992,12 @@ class RegisterStatistics(object):
 
   def __init__(self, op_type, statistic_type):
     """Saves the `op_type` as the `Operation` type."""
-    if not isinstance(op_type, six.string_types):
+    if not isinstance(op_type, str):
       raise TypeError("op_type must be a string.")
     if "," in op_type:
       raise TypeError("op_type must not contain a comma.")
     self._op_type = op_type
-    if not isinstance(statistic_type, six.string_types):
+    if not isinstance(statistic_type, str):
       raise TypeError("statistic_type must be a string.")
     if "," in statistic_type:
       raise TypeError("statistic_type must not contain a comma.")
@@ -3673,6 +3676,15 @@ class Graph(object):
     if self._graph_def_versions.min_consumer < 12:
       self._graph_def_versions.min_consumer = 12
 
+  def _remove_function(self, name):
+    self._check_not_finalized()
+    if not self._is_function(name):
+      raise ValueError(f"Function {name!r} is not found in {self!r}.")
+
+    with self._c_graph.get() as c_graph:
+      pywrap_tf_session.TF_GraphRemoveFunction(c_graph, compat.as_bytes(name))
+      del self._functions[compat.as_str(name)]
+
   @property
   def building_function(self):
     """Returns True iff this graph represents a function."""
@@ -4120,7 +4132,7 @@ class Graph(object):
       KeyError: If `name` does not correspond to an operation in this graph.
     """
 
-    if not isinstance(name, six.string_types):
+    if not isinstance(name, str):
       raise TypeError("Operation names are strings (or similar), not %s." %
                       type(name).__name__)
     return self.as_graph_element(name, allow_tensor=False, allow_operation=True)
@@ -4168,7 +4180,7 @@ class Graph(object):
       KeyError: If `name` does not correspond to a tensor in this graph.
     """
     # Names should be strings.
-    if not isinstance(name, six.string_types):
+    if not isinstance(name, str):
       raise TypeError("Tensor names are strings (or similar), not %s." %
                       type(name).__name__)
     return self.as_graph_element(name, allow_tensor=True, allow_operation=False)
@@ -4292,7 +4304,7 @@ class Graph(object):
       value: The value to add to the collections.
     """
     # Make sure names are unique, but treat strings as a single collection name
-    names = (names,) if isinstance(names, six.string_types) else set(names)
+    names = (names,) if isinstance(names, str) else set(names)
     for name in names:
       self.add_to_collection(name, value)
 
@@ -4364,7 +4376,7 @@ class Graph(object):
   def get_all_collection_keys(self):
     """Returns a list of collections used in this graph."""
     with self._lock:
-      return [x for x in self._collections if isinstance(x, six.string_types)]
+      return [x for x in self._collections if isinstance(x, str)]
 
   def clear_collection(self, name):
     """Clears all values in a collection.
@@ -5087,7 +5099,7 @@ class Graph(object):
       # The hasattr(handle) is designed to match ResourceVariables. This is so
       # control dependencies on a variable or on an unread variable don't
       # trigger reads.
-      if (isinstance(c, IndexedSlices) or
+      if (isinstance(c, internal.IndexedSlices) or
           (hasattr(c, "_handle") and hasattr(c, "op"))):
         c = c.op
       c = self.as_graph_element(c)
@@ -5098,6 +5110,14 @@ class Graph(object):
       if c not in current:
         control_ops.append(c)
         current.add(c)
+        # Mark this op with an attribute indicating that it is used as a manual
+        # control dep in order to allow tracking how common utilization of
+        # manual control deps in graphs run through the MLIR Bridge are. See
+        # go/manual-control-dependencies-bridge for details.
+        # pylint: disable=protected-access
+        c._set_attr("_has_manual_control_dependencies",
+                    attr_value_pb2.AttrValue(b=True))
+        # pylint: enable=protected-access
     return self._ControlDependenciesController(self, control_ops)
 
   # pylint: disable=g-doc-return-or-yield
@@ -5139,7 +5159,7 @@ class Graph(object):
     saved_attrs = {}
     # Install the given attribute
     for name, attr in attr_map.items():
-      if not (isinstance(name, six.string_types) and
+      if not (isinstance(name, str) and
               (isinstance(attr, (type(None), attr_value_pb2.AttrValue)) or
                callable(attr))):
         raise TypeError("attr_map must be a dictionary mapping "
@@ -5208,8 +5228,8 @@ class Graph(object):
     saved_labels = {}
     # Install the given label
     for op_type, label in op_to_kernel_label_map.items():
-      if not (isinstance(op_type, six.string_types) and
-              isinstance(label, six.string_types)):
+      if not (isinstance(op_type, str) and
+              isinstance(label, str)):
         raise TypeError("op_to_kernel_label_map must be a dictionary mapping "
                         "strings to strings")
       try:
@@ -5285,8 +5305,8 @@ class Graph(object):
     saved_mappings = {}
     # Install the given label
     for op_type, mapped_op_type in op_type_map.items():
-      if not (isinstance(op_type, six.string_types) and
-              isinstance(mapped_op_type, six.string_types)):
+      if not (isinstance(op_type, str) and
+              isinstance(mapped_op_type, str)):
         raise TypeError("op_type_map must be a dictionary mapping "
                         "strings to strings")
       try:
@@ -5573,7 +5593,7 @@ def _colocate_with_for_gradient(op, gradient_uid, ignore_existing=False):
   if context.executing_eagerly():
     if op is not None:
       if not hasattr(op, "device"):
-        op = internal_convert_to_tensor_or_indexed_slices(op)
+        op = convert_to_tensor(op)
       return device(op.device)
     else:
       return NullContextmanager()
@@ -5609,10 +5629,47 @@ def control_dependencies(control_inputs):
 
   See `tf.Graph.control_dependencies` for more details.
 
-  Note: *In TensorFlow 2 with eager and/or Autograph, you should not require
-  this method, as ops execute in the expected order thanks to automatic control
-  dependencies.* Only use `tf.control_dependencies` when working with v1
-  `tf.Graph` code.
+  In TensorFlow 2 with eager and/or Autograph, you should not need this method
+  most of the times, as ops execute in the expected order thanks to automatic
+  control dependencies. Only use it to manually control ordering, for example as
+  a workaround to known issues such as `tf.function` with `tf.debugging.assert*`
+  and `tf.py_function`.
+  For example:
+
+  >>> @tf.function(
+  ...   input_signature=[tf.TensorSpec([None, None], tf.float32),
+  ...                    tf.TensorSpec([None, None], tf.float32)])
+  ... def my_assert_func_1(x, bias):
+  ...   # `tf.function` attempts to execute `tf.math.add` in parallel to
+  ...   # `assert_equal`. As a result an error can get raised from `tf.math.add`
+  ...   # without triggering the assertion error.
+  ...   tf.assert_equal(tf.shape(x)[1],
+  ...                   tf.shape(bias)[1],
+  ...                   message='bad shape')
+  ...   return x + bias
+
+  >>> # Error raised in either `add` or `assert`
+  >>> my_assert_func_1(tf.ones((2, 5)), tf.ones((2, 7)))
+  Traceback (most recent call last):
+     ...
+  InvalidArgumentError: ...
+
+
+  >>> @tf.function(
+  ...   input_signature=[tf.TensorSpec([None, None], tf.float32),
+  ...                    tf.TensorSpec([None, None], tf.float32)])
+  ... def my_assert_func_2(x, bias):
+  ...   with tf.control_dependencies(
+  ...       [tf.assert_equal(tf.shape(x)[1],
+  ...                       tf.shape(bias)[1],
+  ...                       message='bad shape')]):
+  ...     return x + bias
+
+  >>> # Error raised in `assert`
+  >>> my_assert_func_2(tf.ones((2, 5)), tf.ones((2, 7)))
+  Traceback (most recent call last):
+     ...
+  InvalidArgumentError: ...
 
   When eager execution is enabled, any callable object in the `control_inputs`
   list will be called.
@@ -6120,22 +6177,22 @@ def enable_eager_execution(config=None, device_policy=None,
       be picked automatically. The value picked may change between TensorFlow
       releases.
       Valid values:
-      - tf.contrib.eager.DEVICE_PLACEMENT_EXPLICIT: raises an error if the
+      - DEVICE_PLACEMENT_EXPLICIT: raises an error if the
         placement is not correct.
-      - tf.contrib.eager.DEVICE_PLACEMENT_WARN: copies the tensors which are not
+      - DEVICE_PLACEMENT_WARN: copies the tensors which are not
         on the right device but logs a warning.
-      - tf.contrib.eager.DEVICE_PLACEMENT_SILENT: silently copies the tensors.
+      - DEVICE_PLACEMENT_SILENT: silently copies the tensors.
         Note that this may hide performance problems as there is no notification
         provided when operations are blocked on the tensor being copied between
         devices.
-      - tf.contrib.eager.DEVICE_PLACEMENT_SILENT_FOR_INT32: silently copies
+      - DEVICE_PLACEMENT_SILENT_FOR_INT32: silently copies
         int32 tensors, raising errors on the other ones.
     execution_mode: (Optional.) Policy controlling how operations dispatched are
       actually executed. When set to None, an appropriate value will be picked
       automatically. The value picked may change between TensorFlow releases.
       Valid values:
-      - tf.contrib.eager.SYNC: executes each operation synchronously.
-      - tf.contrib.eager.ASYNC: executes each operation asynchronously. These
+      - SYNC: executes each operation synchronously.
+      - ASYNC: executes each operation asynchronously. These
         operations may return "non-ready" handles.
 
   Raises:
@@ -6203,13 +6260,9 @@ def enable_eager_execution_internal(config=None,
                            context.DEVICE_PLACEMENT_WARN,
                            context.DEVICE_PLACEMENT_SILENT,
                            context.DEVICE_PLACEMENT_SILENT_FOR_INT32):
-    raise ValueError(
-        "device_policy must be one of None, tf.contrib.eager.DEVICE_PLACEMENT_*"
-    )
+    raise ValueError("device_policy must be one of None, DEVICE_PLACEMENT_*")
   if execution_mode not in (None, context.SYNC, context.ASYNC):
-    raise ValueError(
-        "execution_mode must be one of None, tf.contrib.eager.SYNC, "
-        "tf.contrib.eager.ASYNC")
+    raise ValueError("execution_mode must be one of None, SYNC, " "ASYNC")
   if context.default_execution_mode == context.GRAPH_MODE:
     graph_mode_has_been_used = (
         _default_graph_stack._global_default_graph is not None)  # pylint: disable=protected-access
@@ -6256,7 +6309,6 @@ def eager_run(main=None, argv=None):
   ```python
   import tensorflow as tf
   # Import subject to future changes:
-  from tensorflow.contrib.eager.python import tfe
 
   def main(_):
     u = tf.constant(6.0)
@@ -6469,10 +6521,8 @@ class GraphKeys(object):
     and all `MODEL_VARIABLES` variables will be in `GLOBAL_VARIABLES`.
   * `LOCAL_VARIABLES`: the subset of `Variable` objects that are local to each
     machine. Usually used for temporarily variables, like counters.
-    Note: use `tf.contrib.framework.local_variable` to add to this collection.
   * `MODEL_VARIABLES`: the subset of `Variable` objects that are used in the
-    model for inference (feed forward). Note: use
-    `tf.contrib.framework.model_variable` to add to this collection.
+    model for inference (feed forward).
   * `TRAINABLE_VARIABLES`: the subset of `Variable` objects that will
     be trained by an optimizer. See
     `tf.compat.v1.trainable_variables`
@@ -6506,7 +6556,7 @@ class GraphKeys(object):
   # Key to collect local variables that are local to the machine and are not
   # saved/restored.
   LOCAL_VARIABLES = "local_variables"
-  # Key to collect local variables which are used to accumulate interal state
+  # Key to collect local variables which are used to accumulate internal state
   # to be used in tf.metrics.*.
   METRIC_VARIABLES = "metric_variables"
   # Key to collect model variables defined by layers.
@@ -6604,7 +6654,7 @@ def dismantle_graph(graph):
     graph: A `Graph` object to destroy. Neither it nor any of its ops are usable
       after this function runs.
   """
-  memory.dismantle_ordered_dict(graph._functions)  # pylint: disable=protected-access
+  graph._functions.clear()  # pylint: disable=protected-access
 
   # Now clean up Operation<->Graph reference cycles by clearing all of the
   # attributes for the Graph and its ops.
@@ -6775,7 +6825,7 @@ class internal_name_scope_v1(object):  # pylint: disable=invalid-name
     Raises:
       TypeError: if `default_name` is passed in but not a string.
     """
-    if not (default_name is None or isinstance(default_name, six.string_types)):
+    if not (default_name is None or isinstance(default_name, str)):
       raise TypeError(
           "`default_name` type (%s) is not a string type. You likely meant to "
           "pass this into the `values` kwarg." % type(default_name))
@@ -6956,7 +7006,7 @@ class name_scope_v2(object):
     Raises:
       ValueError: If name is not a string.
     """
-    if not isinstance(name, six.string_types):
+    if not isinstance(name, str):
       raise ValueError("name for name_scope must be a string.")
     self._name = name
     self._exit_fns = []
@@ -7159,28 +7209,16 @@ def _op_to_colocate_with(v, graph):
       return graph.capture(v.handle).op, device_only_candidate
     else:
       return v.handle.op, device_only_candidate
-  return internal_convert_to_tensor_or_indexed_slices(v, as_ref=True).op, None
+  if isinstance(v, EagerTensor) and not context.executing_eagerly():
+    return convert_to_tensor(v, as_ref=True).op, None
+  elif isinstance(v, internal.NativeObject):
+    return v.op, None
+  else:
+    return convert_to_tensor(v, as_ref=True).op, None
 
 
 def _is_keras_symbolic_tensor(x):
   return hasattr(x, "graph") and getattr(x.graph, "name", None) == "keras_graph"
-
-
-# These symbols were originally defined in this module; import them for
-# backwards compatibility until all references have been updated to access
-# them from the indexed_slices.py module.
-IndexedSlices = indexed_slices.IndexedSlices
-IndexedSlicesValue = indexed_slices.IndexedSlicesValue
-convert_to_tensor_or_indexed_slices = \
-    indexed_slices.convert_to_tensor_or_indexed_slices
-convert_n_to_tensor_or_indexed_slices = \
-    indexed_slices.convert_n_to_tensor_or_indexed_slices
-internal_convert_to_tensor_or_indexed_slices = \
-    indexed_slices.internal_convert_to_tensor_or_indexed_slices
-internal_convert_n_to_tensor_or_indexed_slices = \
-    indexed_slices.internal_convert_n_to_tensor_or_indexed_slices
-register_tensor_conversion_function = \
-    tensor_conversion_registry.register_tensor_conversion_function
 
 
 # Helper functions for op wrapper modules generated by `python_op_gen`.
@@ -7352,6 +7390,13 @@ def get_resource_handle_data(graph_op):
 
   return cpp_shape_inference_pb2.CppShapeInferenceResult.HandleData.FromString(
       compat.as_bytes(handle_data))
+
+
+def get_handle_data(source_t):
+  """Obtains HandleData from a tensor."""
+  if isinstance(source_t, EagerTensor):
+    return source_t._handle_data  # pylint: disable=protected-access
+  return get_resource_handle_data(source_t)
 
 
 def _copy_handle_data_to_arg_def(tensor, arg_def):

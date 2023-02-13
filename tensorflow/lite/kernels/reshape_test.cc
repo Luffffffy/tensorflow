@@ -18,7 +18,7 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/kernels/reshape_test_common.h"
 #include "tensorflow/lite/string_type.h"
 
@@ -52,7 +52,7 @@ TYPED_TEST(ReshapeOpTest, MismatchedDimensions) {
       EXPECT_NE(m.Invoke(), kTfLiteOk)
           << "num_input_elements != num_output_elements";
     } else {
-#ifdef GTEST_HAS_DEATH_TEST
+#if GTEST_HAS_DEATH_TEST
       EXPECT_DEATH(
           ReshapeOpModel<TypeParam>({1, 2, 4, 1}, {2}, {2, 1}, shape_type),
           "num_input_elements != num_output_elements");
@@ -62,22 +62,22 @@ TYPED_TEST(ReshapeOpTest, MismatchedDimensions) {
 }
 
 TYPED_TEST(ReshapeOpTest, TooManyDimensions) {
+#if GTEST_HAS_DEATH_TEST
   for (ShapeSpecificationType shape_type :
        ReshapeOpTest<ShapeSpecificationType>::_range_) {
-#ifdef GTEST_HAS_DEATH_TEST
     EXPECT_DEATH(
         ReshapeOpModel<TypeParam>({1, 1, 2, 1, 1, 1, 1, 1, 1}, {9},
                                   {1, 1, 1, 1, 1, 1, 1, 1, 2}, shape_type),
         "Found too many dimensions");
-#endif
   }
+#endif
 }
 
 TYPED_TEST(ReshapeOpTest, TooManySpecialDimensions) {
   for (ShapeSpecificationType shape_type :
        ReshapeOpTest<ShapeSpecificationType>::_range_) {
     if (shape_type != ShapeSpecificationType::kAsTensor) {
-#ifdef GTEST_HAS_DEATH_TEST
+#if GTEST_HAS_DEATH_TEST
       EXPECT_DEATH(ReshapeOpModel<TypeParam>({1, 2, 4, 1}, {4}, {-1, -1, 2, 4},
                                              shape_type),
                    "stretch_dim != -1");
@@ -175,7 +175,7 @@ TYPED_TEST(ReshapeOpTest, LegacyScalarOutput) {
   for (ShapeSpecificationType shape_type :
        ReshapeOpTest<ShapeSpecificationType>::_range_) {
     if (shape_type == ShapeSpecificationType::kAsConstantTensor) {
-#ifdef GTEST_HAS_DEATH_TEST
+#if GTEST_HAS_DEATH_TEST
       EXPECT_DEATH(ReshapeOpModel<TypeParam>({1}, {1}, {0}, shape_type),
                    "num_input_elements != num_output_elements");
 #endif

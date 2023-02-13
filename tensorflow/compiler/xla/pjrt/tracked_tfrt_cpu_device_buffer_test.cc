@@ -20,7 +20,6 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tfrt/host_context/async_dispatch.h"  // from @tf_runtime
 
 namespace xla {
 namespace {
@@ -32,9 +31,9 @@ TEST(TrackedTfrtCpuDeviceBufferTest, Basic) {
 
   auto definition_event = tfrt::MakeConstructedAsyncValueRef<CpuEvent>();
 
-  tensorflow::thread::ThreadPool thread_pool(tensorflow::Env::Default(),
-                                             "tracked_buffer_test",
-                                             /*num_threads=*/4);
+  tsl::thread::ThreadPool thread_pool(tsl::Env::Default(),
+                                      "tracked_buffer_test",
+                                      /*num_threads=*/4);
 
   thread_pool.Schedule([&]() {
     std::memcpy(buffer->data(), expected.data(), expected.size());
@@ -45,7 +44,7 @@ TEST(TrackedTfrtCpuDeviceBufferTest, Basic) {
                                             definition_event,
                                             /*on_delete_callback_=*/nullptr);
 
-  tfrt::Await({tracked_buffer.definition_event().GetAsyncValue()});
+  BlockUntilReady(tracked_buffer.definition_event().GetAsyncValue());
 
   auto result = tracked_buffer.Buffers()[0];
 
@@ -65,9 +64,9 @@ TEST(TrackedTfrtCpuDeviceBufferTest, Tuple) {
   auto definition_event_0 = tfrt::MakeConstructedAsyncValueRef<CpuEvent>();
   auto definition_event_1 = tfrt::MakeConstructedAsyncValueRef<CpuEvent>();
 
-  tensorflow::thread::ThreadPool thread_pool(tensorflow::Env::Default(),
-                                             "tracked_buffer_test",
-                                             /*num_threads=*/4);
+  tsl::thread::ThreadPool thread_pool(tsl::Env::Default(),
+                                      "tracked_buffer_test",
+                                      /*num_threads=*/4);
 
   thread_pool.Schedule([&]() {
     std::memcpy(buffer_0->data(), expected_0.data(), expected_0.size());
@@ -83,7 +82,7 @@ TEST(TrackedTfrtCpuDeviceBufferTest, Tuple) {
       {definition_event_0, definition_event_1},
       /*on_delete_callback_=*/nullptr);
 
-  tfrt::Await({tracked_buffer.definition_event().GetAsyncValue()});
+  BlockUntilReady(tracked_buffer.definition_event().GetAsyncValue());
 
   auto result_0 = tracked_buffer.Buffers()[0];
   auto result_1 = tracked_buffer.Buffers()[1];
@@ -102,9 +101,9 @@ TEST(TrackedTfrtCpuDeviceBufferTest, BasicError) {
 
   auto definition_event = tfrt::MakeConstructedAsyncValueRef<CpuEvent>();
 
-  tensorflow::thread::ThreadPool thread_pool(tensorflow::Env::Default(),
-                                             "tracked_buffer_test",
-                                             /*num_threads=*/4);
+  tsl::thread::ThreadPool thread_pool(tsl::Env::Default(),
+                                      "tracked_buffer_test",
+                                      /*num_threads=*/4);
 
   thread_pool.Schedule([&]() {
     definition_event.SetError("tracked_tfrt_cpu_device_buffer_test error.");
@@ -114,10 +113,10 @@ TEST(TrackedTfrtCpuDeviceBufferTest, BasicError) {
                                             definition_event,
                                             /*on_delete_callback_=*/nullptr);
 
-  tfrt::Await({tracked_buffer.definition_event().GetAsyncValue()});
+  BlockUntilReady(tracked_buffer.definition_event().GetAsyncValue());
 
   ASSERT_TRUE(tracked_buffer.definition_event().IsError());
-  EXPECT_EQ(tracked_buffer.definition_event().GetError().message,
+  EXPECT_EQ(tracked_buffer.definition_event().GetError().message(),
             "tracked_tfrt_cpu_device_buffer_test error.");
 }
 
@@ -131,9 +130,9 @@ TEST(TrackedTfrtCpuDeviceBufferTest, TupleError) {
   auto definition_event_0 = tfrt::MakeConstructedAsyncValueRef<CpuEvent>();
   auto definition_event_1 = tfrt::MakeConstructedAsyncValueRef<CpuEvent>();
 
-  tensorflow::thread::ThreadPool thread_pool(tensorflow::Env::Default(),
-                                             "tracked_buffer_test",
-                                             /*num_threads=*/4);
+  tsl::thread::ThreadPool thread_pool(tsl::Env::Default(),
+                                      "tracked_buffer_test",
+                                      /*num_threads=*/4);
 
   thread_pool.Schedule([&]() {
     std::memcpy(buffer_0->data(), expected.data(), expected.size());
@@ -149,10 +148,10 @@ TEST(TrackedTfrtCpuDeviceBufferTest, TupleError) {
       {definition_event_0, definition_event_1},
       /*on_delete_callback_=*/nullptr);
 
-  tfrt::Await({tracked_buffer.definition_event().GetAsyncValue()});
+  BlockUntilReady(tracked_buffer.definition_event().GetAsyncValue());
 
   ASSERT_TRUE(tracked_buffer.definition_event().IsError());
-  EXPECT_EQ(tracked_buffer.definition_event().GetError().message,
+  EXPECT_EQ(tracked_buffer.definition_event().GetError().message(),
             "tracked_tfrt_cpu_device_buffer_test tuple error.");
 }
 

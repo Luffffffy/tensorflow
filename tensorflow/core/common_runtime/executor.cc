@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/executor.h"
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -72,6 +73,7 @@ limitations under the License.
 #include "tensorflow/core/profiler/lib/annotated_traceme.h"
 #include "tensorflow/core/profiler/lib/connected_traceme.h"
 #include "tensorflow/core/profiler/lib/scoped_annotation.h"
+#include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/profiler/lib/traceme_encode.h"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tensorflow/core/util/determinism.h"
@@ -295,6 +297,9 @@ class ExecutorState {
   // Process a ready node in current thread.
   void Process(TaggedNode node, int64_t scheduled_nsec);
 
+  void ProcessInline(TaggedNodeReadyQueue* inline_ready,
+                     int64_t scheduled_nsec);
+
   Status ProcessSync(const NodeItem& item, OpKernelContext::Params* params,
                      EntryVector* outputs, NodeExecStatsInterface* stats);
   void ProcessAsync(const NodeItem& item, const OpKernelContext::Params& params,
@@ -335,7 +340,7 @@ class ExecutorState {
   // execution should dispatch work using this function instead of using runner_
   // directly.
   template <typename Closure>
-  void RunTask(Closure&& c);
+  void RunTask(Closure&& c, int sample_rate = 0);
 
   // Clean up when this executor is done.
   void Finish();
@@ -351,9 +356,15 @@ class ExecutorState {
   const bool log_memory_;
 
   int64_t step_id_;
+  int64_t trace_id_;  // for profiler.
   int64_t start_time_usecs_ = 0;
   // The deadline for the session to complete by. Empty if unspecified.
   absl::optional<absl::Time> deadline_;
+
+  // Maximum number of kernels that can be scheduled inline. If lots of kernels
+  // are ready at the same time, scheduling them in one thread can be very slow.
+  // TODO(fishx): Make it configurable if necessary.
+  static constexpr uint64 kInlineScheduleReadyThreshold = 500;
 
   // Not owned.
   RendezvousInterface* rendezvous_;
@@ -375,7 +386,7 @@ class ExecutorState {
   const ImmutableExecutorState& immutable_state_;
   ExecutorImpl::KernelStats* const kernel_stats_;
   CancellationManager* cancellation_manager_;
-  CoordinationServiceAgent* coordination_service_agent_;
+  tsl::CoordinationServiceAgent* coordination_service_agent_;
   absl::optional<ManagedStackTrace> stack_trace_ = absl::nullopt;
   // If not null, use this device to schedule intra-op operation
   std::unique_ptr<DeviceBase> user_device_;
@@ -407,6 +418,7 @@ ExecutorState<PropagatorStateType>::ExecutorState(
     : vlog_(VLOG_IS_ON(1)),
       log_memory_(LogMemory::IsEnabled()),
       step_id_(args.step_id),
+      trace_id_(args.function_trace_id ? *args.function_trace_id : step_id_),
       start_time_usecs_(args.start_time_usecs),
       deadline_(args.deadline),
       rendezvous_(args.rendezvous),
@@ -449,16 +461,16 @@ ExecutorState<PropagatorStateType>::~ExecutorState() {
 
 template <class PropagatorStateType>
 template <typename Closure>
-void ExecutorState<PropagatorStateType>::RunTask(Closure&& c) {
+void ExecutorState<PropagatorStateType>::RunTask(Closure&& c, int sample_rate) {
   // Align the atomic variables at 64 bytes to avoid false-sharing, assuming the
   // cacheline size is 64 bytes or smaller.
   alignas(64) static std::atomic<int64_t> num_enqueue_ops{0};
   alignas(64) static std::atomic<int64_t> num_dequeue_ops{0};
 
   auto n_enqueues = num_enqueue_ops.fetch_add(1, std::memory_order_relaxed);
-  // Sample the queue length on every 16 enqueue operations. This amortizes the
-  // cost of metric updates across 16 operations.
-  if (n_enqueues % 16 == 0) {
+  // Sample the queue length on at least every 16 enqueue operations. This
+  // amortizes the cost of metric updates across 16 operations.
+  if (n_enqueues % std::max(16, sample_rate) == 0) {
     auto n_dequeues = num_dequeue_ops.load(std::memory_order_relaxed);
     metrics::UpdateGraphPendingQueueLength(n_enqueues - n_dequeues);
   }
@@ -682,23 +694,18 @@ void ExecutorState<PropagatorStateType>::ProcessConstTensor(
 template <class PropagatorStateType>
 void ExecutorState<PropagatorStateType>::Process(TaggedNode tagged_node,
                                                  int64_t scheduled_nsec) {
-  profiler::TraceMeConsumer activity(
-      // From TraceMeProducer in DirectSession::RunInternal,
-      // GraphMgr::ExecuteAsync, or FunctionLibraryRuntime::Run.
-      [&] {
-        // NOTE: This tracing uses the iteration number from the first tagged
-        // node that executes during this call to `Process()`. In principle,
-        // subsequent nodes could have different values of `iter_num` that
-        // will not be traced.
-        return profiler::TraceMeEncode(
-            "ExecutorState::Process",
-            {{"id", step_id_}, {"iter_num", tagged_node.get_iter_num()}});
-      },
-      profiler::ContextType::kTfExecutor, step_id_,
-      profiler::TraceMeLevel::kInfo);
+  profiler::TraceMe traceme("ExecutorState::Process Scheduled",
+                            profiler::TraceMeLevel::kVerbose);
+  TaggedNodeReadyQueue inline_ready;
+  inline_ready.push_back(tagged_node);
+  return ProcessInline(&inline_ready, scheduled_nsec);
+}
+
+template <class PropagatorStateType>
+void ExecutorState<PropagatorStateType>::ProcessInline(
+    TaggedNodeReadyQueue* inline_ready, int64_t scheduled_nsec) {
   WithContext wc(context_);
   TaggedNodeSeq ready;
-  TaggedNodeReadyQueue inline_ready;
 
   // Parameters passed to OpKernel::Compute.
   TensorValueVec inputs;
@@ -761,10 +768,30 @@ void ExecutorState<PropagatorStateType>::Process(TaggedNode tagged_node,
   EntryVector outputs(1);
 
   bool completed = false;
-  inline_ready.push_back(tagged_node);
-  while (!inline_ready.empty()) {
-    tagged_node = inline_ready.front();
-    inline_ready.pop_front();
+  int64_t last_iter_num = -1;
+  std::unique_ptr<profiler::TraceMeConsumer> iteration_scope;
+  while (!inline_ready->empty()) {
+    TaggedNode tagged_node = inline_ready->front();
+
+    int64_t current_iter_num = tagged_node.get_iter_num();
+    if (current_iter_num != last_iter_num) {
+      iteration_scope = std::make_unique<profiler::TraceMeConsumer>(
+          // From TraceMeProducer in DirectSession::RunInternal,
+          // GraphMgr::ExecuteAsync, or FunctionLibraryRuntime::Run.
+          [&] {
+            // NOTE: This tracing uses the iteration number from the first
+            // tagged node that executes during this call to `Process()`. In
+            // principle, subsequent nodes could have different values of
+            // `iter_num` that will not be traced.
+            return profiler::TraceMeEncode(
+                "ExecutorState::Process",
+                {{"id", step_id_}, {"iter_num", tagged_node.get_iter_num()}});
+          },
+          profiler::ContextType::kTfExecutor, trace_id_,
+          profiler::TraceMeLevel::kInfo);
+      last_iter_num = current_iter_num;
+    }
+    inline_ready->pop_front();
     const NodeItem& item = tagged_node.get_node_item();
     const int id = item.node_id;
 
@@ -830,7 +857,7 @@ void ExecutorState<PropagatorStateType>::Process(TaggedNode tagged_node,
         propagator_.MaybeMarkCompleted(tagged_node);
         activity_watcher::ActivityEnd(activity_id);
         // Continue to process the nodes in 'inline_ready'.
-        completed = NodeDone(s, &ready, stats, &inline_ready);
+        completed = NodeDone(s, &ready, stats, inline_ready);
         continue;
       }
 
@@ -883,7 +910,7 @@ void ExecutorState<PropagatorStateType>::Process(TaggedNode tagged_node,
         scheduled_nsec = nodestats::NowInNsec();
       }
       // Postprocess.
-      completed = NodeDone(s, &ready, stats, &inline_ready);
+      completed = NodeDone(s, &ready, stats, inline_ready);
     }
   }  // while !inline_ready.empty()
 
@@ -1162,11 +1189,19 @@ bool ExecutorState<PropagatorStateType>::NodeDone(
       TRACEPRINTF("StartAbort: %s", s.ToString().c_str());
       if (cancellation_manager_) {
         // Only log when the abort happens during the actual run time.
-        // Use VLOG instead of LOG(warning) because error status is expected
-        // when the executor is run under the grappler optimization phase or
-        // when iterating through a tf.data input pipeline.
-        VLOG(1) << "[" << immutable_state_.params().device->name()
-                << "] Executor start aborting: " << s;
+        // Use LOG(INFO) instead of LOG(WARNING) because error status is
+        // expected when the executor is run under the grappler optimization
+        // phase. Do not log OutOfRange erros because they are expected when
+        // iterating through a tf.data input pipeline.
+        if (!errors::IsOutOfRange(s)) {
+          LOG(INFO) << "[" << immutable_state_.params().device->name()
+                    << "] (DEBUG INFO) Executor start aborting (this does not "
+                       "indicate an error and you can ignore this message): "
+                    << s;
+        } else {
+          VLOG(1) << "[" << immutable_state_.params().device->name()
+                  << "] Executor start aborting: " << s;
+        }
       }
 
       if (rendezvous_) {
@@ -1189,6 +1224,15 @@ bool ExecutorState<PropagatorStateType>::NodeDone(
 template <class PropagatorStateType>
 void ExecutorState<PropagatorStateType>::ScheduleReady(
     TaggedNodeSeq* ready, TaggedNodeReadyQueue* inline_ready) {
+  profiler::TraceMe activity(
+      [&]() {
+        return strings::StrCat(
+            "ExecutorState::ScheduleReady#",
+            "ready_size=", (ready == nullptr ? -1 : ready->size()),
+            ",inline_ready_size=",
+            (inline_ready == nullptr ? -1 : inline_ready->size()), "#");
+      },
+      profiler::GetTFTraceMeLevel(/*is_expensive=*/false));
   DCHECK(!ready->empty());
 
   int64_t scheduled_nsec = 0;
@@ -1214,10 +1258,12 @@ void ExecutorState<PropagatorStateType>::ScheduleReady(
     }
   } else {
     const TaggedNode* curr_expensive_node = nullptr;
+    TaggedNodeSeq expensive_nodes;
     if (inline_ready == nullptr) {
       // Schedule to run all the ready ops in thread pool.
       for (auto& tagged_node : *ready) {
-        RunTask([=]() { Process(tagged_node, scheduled_nsec); });
+        RunTask([=]() { Process(tagged_node, scheduled_nsec); },
+                /*sample_rate=*/ready->size());
       }
     } else {
       for (auto& tagged_node : *ready) {
@@ -1227,10 +1273,7 @@ void ExecutorState<PropagatorStateType>::ScheduleReady(
           inline_ready->push_back(tagged_node);
         } else {
           if (curr_expensive_node) {
-            // Dispatch to another thread since there is plenty of work to
-            // do for this thread.
-            RunTask(std::bind(&ExecutorState::Process, this,
-                              *curr_expensive_node, scheduled_nsec));
+            expensive_nodes.push_back(*curr_expensive_node);
           }
           curr_expensive_node = &tagged_node;
         }
@@ -1242,8 +1285,48 @@ void ExecutorState<PropagatorStateType>::ScheduleReady(
       } else {
         // There are inline nodes to run already. We dispatch this expensive
         // node to other thread.
-        RunTask(std::bind(&ExecutorState::Process, this, *curr_expensive_node,
-                          scheduled_nsec));
+        expensive_nodes.push_back(*curr_expensive_node);
+      }
+    }
+    if (!expensive_nodes.empty()) {
+      if (expensive_nodes.size() < kInlineScheduleReadyThreshold) {
+        for (auto& tagged_node : expensive_nodes) {
+          RunTask(std::bind(&ExecutorState::Process, this, tagged_node,
+                            scheduled_nsec),
+                  /*sample_rate=*/expensive_nodes.size());
+        }
+      } else {
+        // There are too many ready expensive nodes. Schedule them in child
+        // threads.
+        // TODO(fishx): Apply the same optimization to cheap ops as well since
+        // executing lots of cheap ops in one thread can potentially be the
+        // bottleneck as well.
+        auto it = expensive_nodes.begin();
+        while (it < expensive_nodes.end()) {
+          auto end = it;
+          std::advance(end, kInlineScheduleReadyThreshold);
+          if (end > expensive_nodes.end()) {
+            end = expensive_nodes.end();
+          }
+          TaggedNodeSeq ready_chunk{it, end};
+          RunTask(
+              [this, ready_chunk = std::move(ready_chunk), scheduled_nsec]() {
+                profiler::TraceMe activity(
+                    [&]() {
+                      return strings::StrCat(
+                          "ExecutorState::ScheduleReady::"
+                          "ChildThreadExpensiveNodes#",
+                          "ready_chunk_size=", ready_chunk.size(), "#");
+                    },
+                    profiler::GetTFTraceMeLevel(/*is_expensive=*/false));
+                for (auto& tagged_node : ready_chunk) {
+                  RunTask(std::bind(&ExecutorState::Process, this, tagged_node,
+                                    scheduled_nsec),
+                          /*sample_rate=*/ready_chunk.size());
+                }
+              });
+          it = end;
+        }
       }
     }
   }
@@ -1277,6 +1360,7 @@ void ExecutorState<PropagatorStateType>::Finish() {
   auto done_cb = std::move(done_cb_);
   auto runner = std::move(runner_);
   mu_.unlock();
+  int64_t trace_id = trace_id_;
   int64_t step_id = step_id_;
   CHECK(done_cb != nullptr);
   Device* device = immutable_state_.params().device;
@@ -1332,7 +1416,7 @@ void ExecutorState<PropagatorStateType>::Finish() {
       }
     }
     delete this;
-    runner([step_id, status, done_cb = std::move(done_cb)]() {
+    runner([step_id, trace_id, status, done_cb = std::move(done_cb)]() {
       profiler::TraceMeConsumer activity(
           // From TraceMeProducer in KernelAndDeviceFunc::RunAsync,
           // DirectSession::RunInternal or GraphMgr::ExecuteAsync.
@@ -1340,7 +1424,7 @@ void ExecutorState<PropagatorStateType>::Finish() {
             return profiler::TraceMeEncode("ExecutorDoneCallback",
                                            {{"id", step_id}});
           },
-          profiler::ContextType::kTfExecutor, step_id,
+          profiler::ContextType::kTfExecutor, trace_id,
           profiler::TraceMeLevel::kInfo);
       done_cb(status);
     });
@@ -1352,10 +1436,10 @@ void ExecutorState<PropagatorStateType>::Finish() {
     // devices like GPUs that continue to execute Ops after their Compute
     // methods have completed, this ensures that control is not returned to
     // the user until the step (and its side-effects) has actually completed.
-    device->Sync([this, step_id, runner = std::move(runner),
+    device->Sync([this, step_id, trace_id, runner = std::move(runner),
                   done_cb = std::move(done_cb)](const Status& status) mutable {
       delete this;
-      runner([step_id, status, done_cb = std::move(done_cb)]() {
+      runner([step_id, trace_id, status, done_cb = std::move(done_cb)]() {
         profiler::TraceMeConsumer activity(
             // From TraceMeProducer in KernelAndDeviceFunc::RunAsync,
             // DirectSession::RunInternal or GraphMgr::ExecuteAsync.
@@ -1363,14 +1447,14 @@ void ExecutorState<PropagatorStateType>::Finish() {
               return profiler::TraceMeEncode("ExecutorDoneCallback",
                                              {{"id", step_id}});
             },
-            profiler::ContextType::kTfExecutor, step_id,
+            profiler::ContextType::kTfExecutor, trace_id,
             profiler::TraceMeLevel::kInfo);
         done_cb(status);
       });
     });
   } else {
     delete this;
-    runner([step_id, status, done_cb = std::move(done_cb)]() {
+    runner([step_id, trace_id, status, done_cb = std::move(done_cb)]() {
       profiler::TraceMeConsumer activity(
           // From TraceMeProducer in KernelAndDeviceFunc::RunAsync,
           // DirectSession::RunInternal or GraphMgr::ExecuteAsync.
@@ -1378,7 +1462,7 @@ void ExecutorState<PropagatorStateType>::Finish() {
             return profiler::TraceMeEncode("ExecutorDoneCallback",
                                            {{"id", step_id}});
           },
-          profiler::ContextType::kTfExecutor, step_id,
+          profiler::ContextType::kTfExecutor, trace_id,
           profiler::TraceMeLevel::kInfo);
       done_cb(status);
     });

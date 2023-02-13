@@ -15,7 +15,6 @@ limitations under the License.
 
 package org.tensorflow.lite;
 
-import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -24,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.tensorflow.lite.InterpreterApi.Options.TfLiteRuntime;
+import org.tensorflow.lite.acceleration.ValidatedAccelerationConfig;
 import org.tensorflow.lite.nnapi.NnApiDelegate;
 
 /**
@@ -34,16 +34,15 @@ import org.tensorflow.lite.nnapi.NnApiDelegate;
  *
  * <p>For example, if a model takes only one input and returns only one output:
  *
- * <pre>{@code
+ * <pre> {@code
  * try (InterpreterApi interpreter =
  *     new InterpreterApi.create(file_of_a_tensorflowlite_model)) {
  *   interpreter.run(input, output);
- * }
- * }</pre>
+ * }}</pre>
  *
  * <p>If a model takes multiple inputs or outputs:
  *
- * <pre>{@code
+ * <pre> {@code
  * Object[] inputs = {input0, input1, ...};
  * Map<Integer, Object> map_of_indices_to_outputs = new HashMap<>();
  * FloatBuffer ith_output = FloatBuffer.allocateDirect(3 * 2 * 4);  // Float tensor, shape 3x2x4.
@@ -52,19 +51,17 @@ import org.tensorflow.lite.nnapi.NnApiDelegate;
  * try (InterpreterApi interpreter =
  *     new InterpreterApi.create(file_of_a_tensorflowlite_model)) {
  *   interpreter.runForMultipleInputsOutputs(inputs, map_of_indices_to_outputs);
- * }
- * }</pre>
+ * }}</pre>
  *
  * <p>If a model takes or produces string tensors:
  *
- * <pre>{@code
+ * <pre> {@code
  * String[] input = {"foo", "bar"};  // Input tensor shape is [2].
  * String[] output = new String[3][2];  // Output tensor shape is [3, 2].
  * try (InterpreterApi interpreter =
  *     new InterpreterApi.create(file_of_a_tensorflowlite_model)) {
  *   interpreter.runForMultipleInputsOutputs(input, output);
- * }
- * }</pre>
+ * }}</pre>
  *
  * <p>Orders of inputs and outputs are determined when converting TensorFlow model to TensorFlowLite
  * model with Toco, as are the default shapes of the inputs.
@@ -102,6 +99,8 @@ public interface InterpreterApi extends AutoCloseable {
       this.delegates = new ArrayList<>(other.delegates);
       this.delegateFactories = new ArrayList<>(other.delegateFactories);
       this.runtime = other.runtime;
+      this.validatedAccelerationConfig = other.validatedAccelerationConfig;
+      this.useXNNPACK = other.useXNNPACK;
     }
 
     /**
@@ -112,7 +111,6 @@ public interface InterpreterApi extends AutoCloseable {
      * unspecified, or set to the value -1, the number of threads used will be
      * implementation-defined and platform-dependent.
      */
-    @CanIgnoreReturnValue
     public Options setNumThreads(int numThreads) {
       this.numThreads = numThreads;
       return this;
@@ -130,7 +128,6 @@ public interface InterpreterApi extends AutoCloseable {
     }
 
     /** Sets whether to use NN API (if available) for op execution. Defaults to false (disabled). */
-    @CanIgnoreReturnValue
     public Options setUseNNAPI(boolean useNNAPI) {
       this.useNNAPI = useNNAPI;
       return this;
@@ -154,7 +151,6 @@ public interface InterpreterApi extends AutoCloseable {
      * true}, the interpreter will stop execution. The interpreter will remain a cancelled state
      * until explicitly "uncancelled" by {@code setCancelled(false)}.
      */
-    @CanIgnoreReturnValue
     public Options setCancellable(boolean allow) {
       this.allowCancellation = allow;
       return this;
@@ -184,7 +180,6 @@ public interface InterpreterApi extends AutoCloseable {
      * external (developer-provided) delegates, and adding a {@link Delegate} other than {@link
      * NnApiDelegate} here is not allowed when using TF Lite in Google Play Services.
      */
-    @CanIgnoreReturnValue
     public Options addDelegate(Delegate delegate) {
       delegates.add(delegate);
       return this;
@@ -205,7 +200,6 @@ public interface InterpreterApi extends AutoCloseable {
      * <p>Delegates from a delegated factory that was added here are applied after any delegates
      * added with {@link #addDelegate}.
      */
-    @CanIgnoreReturnValue
     public Options addDelegateFactory(DelegateFactory delegateFactory) {
       delegateFactories.add(delegateFactory);
       return this;
@@ -267,7 +261,6 @@ public interface InterpreterApi extends AutoCloseable {
     }
 
     /** Specify where to get the TF Lite runtime implementation from. */
-    @CanIgnoreReturnValue
     public Options setRuntime(TfLiteRuntime runtime) {
       this.runtime = runtime;
       return this;
@@ -278,10 +271,48 @@ public interface InterpreterApi extends AutoCloseable {
       return runtime;
     }
 
+    /** Specify the acceleration configuration. */
+    public Options setAccelerationConfig(ValidatedAccelerationConfig config) {
+      this.validatedAccelerationConfig = config;
+      return this;
+    }
+
+    /** Return the acceleration configuration. */
+    public ValidatedAccelerationConfig getAccelerationConfig() {
+      return this.validatedAccelerationConfig;
+    }
+
+    /**
+     * Enable or disable an optimized set of CPU kernels (provided by XNNPACK). Enabled by default.
+     */
+    public Options setUseXNNPACK(boolean useXNNPACK) {
+      this.useXNNPACK = useXNNPACK;
+      return this;
+    }
+
+    public boolean getUseXNNPACK() {
+      // A null value indicates the default behavior, which is currently to apply the delegate.
+      return useXNNPACK == null || useXNNPACK.booleanValue();
+    }
+
     TfLiteRuntime runtime = TfLiteRuntime.FROM_APPLICATION_ONLY;
     int numThreads = -1;
     Boolean useNNAPI;
+
+    /**
+     * Note: the initial "null" value indicates default behavior (XNNPACK delegate will be applied
+     * by default whenever possible).
+     *
+     * <p>Disabling this flag will disable use of a highly optimized set of CPU kernels provided via
+     * the XNNPACK delegate. Currently, this is restricted to a subset of floating point operations.
+     * See
+     * https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/delegates/xnnpack/README.md
+     * for more details.
+     */
+    Boolean useXNNPACK;
+
     Boolean allowCancellation;
+    ValidatedAccelerationConfig validatedAccelerationConfig;
 
     // See InterpreterApi.Options#addDelegate.
     final List<Delegate> delegates;
@@ -417,15 +448,14 @@ public interface InterpreterApi extends AutoCloseable {
    * execution if any input tensors have been resized. This call is most useful in determining the
    * shapes for any output tensors before executing the graph, e.g.,
    *
-   * <pre>{@code
+   * <pre> {@code
    * interpreter.resizeInput(0, new int[]{1, 4, 4, 3}));
    * interpreter.allocateTensors();
    * FloatBuffer input = FloatBuffer.allocate(interpreter.getInputTensor(0).numElements());
    * // Populate inputs...
    * FloatBuffer output = FloatBuffer.allocate(interpreter.getOutputTensor(0).numElements());
    * interpreter.run(input, output)
-   * // Process outputs...
-   * }</pre>
+   * // Process outputs...}</pre>
    *
    * <p>Note: Some graphs have dynamically shaped outputs, in which case the output shape may not
    * fully propagate until inference is executed.
@@ -440,7 +470,7 @@ public interface InterpreterApi extends AutoCloseable {
    * @throws IllegalArgumentException if {@code idx} is negative or is not smaller than the number
    *     of model inputs; or if error occurs when resizing the idx-th input.
    */
-  void resizeInput(int idx, int @NonNull [] dims);
+  void resizeInput(int idx, @NonNull int[] dims);
 
   /**
    * Resizes idx-th input of the native model to the given dims.
@@ -452,7 +482,7 @@ public interface InterpreterApi extends AutoCloseable {
    *     of model inputs; or if error occurs when resizing the idx-th input. Additionally, the error
    *     occurs when attempting to resize a tensor with fixed dimensions when `strict` is True.
    */
-  void resizeInput(int idx, int @NonNull [] dims, boolean strict);
+  void resizeInput(int idx, @NonNull int[] dims, boolean strict);
 
   /** Gets the number of input tensors. */
   int getInputTensorCount();

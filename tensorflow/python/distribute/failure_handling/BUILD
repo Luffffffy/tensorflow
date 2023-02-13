@@ -1,9 +1,7 @@
-load("//tensorflow:tensorflow.bzl", "tf_py_test")
-
-# buildifier: disable=same-origin-load
-load("//tensorflow:tensorflow.bzl", "tf_custom_op_py_library")
+load("//tensorflow:tensorflow.default.bzl", "tf_custom_op_py_library", "tf_py_test")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
         "//tensorflow:internal",
     ],
@@ -17,36 +15,54 @@ py_library(
     ],
     srcs_version = "PY3",
     deps = [
-        ":gce_util",
+        ":failure_handling_util",
         "//tensorflow/python:lib",
         "//tensorflow/python:variables",
+        "//tensorflow/python/checkpoint",
         "//tensorflow/python/checkpoint:checkpoint_management",
         "//tensorflow/python/distribute:multi_worker_util",
+        "//tensorflow/python/distribute/failure_handling:check_preemption_py",
         "//tensorflow/python/eager:context",
         "//tensorflow/python/framework:constant_op",
         "//tensorflow/python/framework:dtypes",
         "//tensorflow/python/framework:errors",
+        "//tensorflow/python/framework:ops",
         "//tensorflow/python/lib/io:lib",
         "//tensorflow/python/platform",
+        "//tensorflow/python/util:tf_decorator",
         "//tensorflow/python/util:tf_export",
     ],
 )
 
 py_library(
-    name = "gce_util",
+    name = "failure_handling_util",
     srcs = [
-        "gce_util.py",
+        "failure_handling_util.py",
     ],
     srcs_version = "PY3",
     deps = [
     ],
 )
 
+py_library(
+    name = "preemption_watcher",
+    srcs = ["preemption_watcher.py"],
+    srcs_version = "PY3",
+    deps = [
+        ":failure_handling_util",
+        "//tensorflow/python/eager:context",
+        "//tensorflow/python/util:tf_export",
+        "@absl_py//absl/logging",
+    ],
+)
+
 tf_py_test(
     name = "failure_handler_test",
+    timeout = "long",
     srcs = ["failure_handler_test.py"],
-    shard_count = 4,
+    shard_count = 8,
     tags = [
+        "no_pip",  # TODO(b/266520226)
         "no_windows",  # TODO(b/197981388)
     ],
     deps = [
@@ -76,12 +92,13 @@ tf_py_test(
     srcs = ["gce_failure_handler_test.py"],
     shard_count = 8,
     tags = [
+        "no_pip",  # TODO(b/266520226)
         "noasan",  # TODO(b/226154233): Flaky test
         "nomsan",  # TODO(b/226154233): Flaky test
     ],
     deps = [
         ":failure_handling_lib",
-        ":gce_util",
+        ":failure_handling_util",
         "//tensorflow/python/distribute:combinations",
         "//tensorflow/python/distribute:multi_process_runner",
         "//tensorflow/python/distribute:multi_worker_test_base",

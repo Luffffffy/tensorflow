@@ -17,8 +17,10 @@ limitations under the License.
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/data/name_utils.h"
@@ -63,7 +65,9 @@ void SetRootDatasetParams(const Options& options, RootDataset::Params* params) {
   params->autotune = ShouldUseAutotuning(options);
   if (params->autotune) {
     params->autotune_algorithm = model::AutotuneAlgorithm::DEFAULT;
-    if (GetExperiments().contains("stage_based_autotune")) {
+    auto experiments = GetExperiments();
+    if (experiments.contains("stage_based_autotune") ||
+        experiments.contains("stage_based_autotune_v2")) {
       params->autotune_algorithm = model::AutotuneAlgorithm::STAGE_BASED;
     }
     if (options.autotune_options().optional_autotune_algorithm_case() ==
@@ -139,8 +143,12 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
       : DatasetIterator<RootDataset>(params) {
     if (dataset()->params_.autotune) {
       model_ = std::make_shared<model::Model>();
-      if (GetExperiments().contains("autotune_buffer_optimization")) {
-        model_->SetExperiment("autotune_buffer_optimization");
+      auto experiments = GetExperiments();
+      if (experiments.contains("stage_based_autotune_v2")) {
+        model_->AddExperiment("stage_based_autotune_v2");
+      }
+      if (experiments.contains("autotune_buffer_optimization")) {
+        model_->AddExperiment("autotune_buffer_optimization");
       }
     }
     if (dataset()->params_.max_intra_op_parallelism >= 0) {
@@ -161,9 +169,14 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
 
   ~Iterator() override { cancellation_manager_->StartCancel(); }
 
+  bool SymbolicCheckpointCompatible() const override { return true; }
+
   Status Initialize(IteratorContext* ctx) override {
-    return dataset()->input_->MakeIterator(IteratorContext(CreateParams(ctx)),
-                                           this, prefix(), &input_impl_);
+    IteratorContext iter_ctx(CreateParams(ctx));
+    TF_RETURN_IF_ERROR(dataset()->input_->MakeIterator(&iter_ctx, this,
+                                                       prefix(), &input_impl_));
+    ctx->MergeCheckpoint(iter_ctx.checkpoint());
+    return OkStatus();
   }
 
   Status GetNextInternal(IteratorContext* ctx, std::vector<Tensor>* out_tensors,
@@ -177,8 +190,10 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
     if (dataset()->params_.autotune) {
       TF_RETURN_IF_ERROR(EnsureModelThreadStarted(ctx));
     }
-    TF_RETURN_IF_ERROR(input_impl_->GetNext(IteratorContext(CreateParams(ctx)),
-                                            out_tensors, end_of_sequence));
+    IteratorContext iter_ctx(CreateParams(ctx));
+    TF_RETURN_IF_ERROR(
+        input_impl_->GetNext(&iter_ctx, out_tensors, end_of_sequence));
+    ctx->MergeCheckpoint(iter_ctx.checkpoint());
     {
       mutex_lock l(mu_);
       end_time_usec_ = std::max(ctx->env()->NowMicros(), end_time_usec_);
@@ -200,8 +215,9 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
 
   Status RestoreInternal(IteratorContext* ctx,
                          IteratorStateReader* reader) override {
-    TF_RETURN_IF_ERROR(
-        RestoreInput(IteratorContext(CreateParams(ctx)), reader, input_impl_));
+    IteratorContext iter_ctx(CreateParams(ctx));
+    TF_RETURN_IF_ERROR(RestoreInput(&iter_ctx, reader, input_impl_));
+    ctx->MergeCheckpoint(iter_ctx.checkpoint());
     return OkStatus();
   }
 
@@ -249,7 +265,6 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
       params.runner =
           RunnerWithMaxParallelism(params.runner, max_intra_op_parallelism_);
     }
-    params.options = &dataset()->options();
     return params;
   }
 
@@ -305,7 +320,7 @@ RootDataset::RootDataset(core::RefCountPtr<DatasetBase> input,
   AddTraceMetadata(params_, &traceme_metadata_);
 }
 
-RootDataset::~RootDataset() {}
+RootDataset::~RootDataset() = default;
 
 std::unique_ptr<IteratorBase> RootDataset::MakeIteratorInternal(
     const string& prefix) const {

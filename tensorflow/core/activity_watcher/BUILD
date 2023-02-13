@@ -2,6 +2,7 @@ load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load("//tensorflow:tensorflow.bzl", "if_not_android")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//tensorflow:internal"],
     licenses = ["notice"],
 )
@@ -43,11 +44,9 @@ cc_library(
 cc_library(
     name = "activity_watcher_utils",
     srcs = ["activity_utils.cc"],
-    hdrs = ["activity_watcher_headers"],
+    hdrs = ["activity_utils.h"],
     deps = [
+        ":activity_watcher",
         "//tensorflow/core:framework",
-        "//tensorflow/core:portable_gif_internal",
-        "//tensorflow/core/platform:macros",
-        "@com_google_absl//absl/container:flat_hash_map",
     ],
 )

@@ -23,7 +23,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/compiler/xla/tests/hlo_test_base.h"
 #include "tensorflow/compiler/xla/util.h"
-#include "tensorflow/core/platform/statusor.h"
+#include "tensorflow/tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
@@ -59,7 +59,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, VectorizeTo4) {
                   custom_call_target="__cudnn$convForward",
                   backend_config="{bar: 0}"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -71,7 +71,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, VectorizeTo4) {
       root,
       GmockMatch(m::Tuple(
           m::Reshape(m::GetTupleElement(
-                         m::CustomCall(&conv, kCudnnConvForwardCallTarget,
+                         m::CustomCall(&conv, {kCudnnConvForwardCallTarget},
                                        m::Reshape(m::Parameter(0))
                                            .WithShape(S8, {10, 20, 30, 10, 4}),
                                        m::Reshape(m::Parameter(1))
@@ -118,7 +118,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, NoVectorizeTo4UnsupportedFilterType) {
                   custom_call_target="__cudnn$convForward",
                   backend_config="{bar: 0}"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_FALSE(changed);
 }
@@ -134,7 +134,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, VectorizeTo4NCHW) {
                   window={size=2x2}, dim_labels=bf01_io01->bf01,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -146,7 +146,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, VectorizeTo4NCHW) {
       root,
       GmockMatch(m::Tuple(
           m::Reshape(m::GetTupleElement(
-                         m::CustomCall(&conv, kCudnnConvForwardCallTarget,
+                         m::CustomCall(&conv, {kCudnnConvForwardCallTarget},
                                        m::Reshape(m::Parameter(0))
                                            .WithShape(S8, {10, 12, 4, 20, 30}),
                                        m::Reshape(m::Parameter(1))
@@ -187,7 +187,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, IncrementAllDnums) {
                   window={size=2x2}, dim_labels=fb01_i01o->fb01,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -199,7 +199,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, IncrementAllDnums) {
       root,
       GmockMatch(m::Tuple(
           m::Reshape(m::GetTupleElement(
-                         m::CustomCall(&conv, kCudnnConvForwardCallTarget,
+                         m::CustomCall(&conv, {kCudnnConvForwardCallTarget},
                                        m::Reshape(m::Parameter(0))
                                            .WithShape(S8, {4, 4, 16, 16, 16}),
                                        m::Reshape(m::Parameter(1))
@@ -240,7 +240,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, FilterDnums) {
                   window={size=3x3 pad=1_1x1_1}, dim_labels=bf01_01io->bf01,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -252,7 +252,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, FilterDnums) {
       root,
       GmockMatch(m::Tuple(
           m::Reshape(m::GetTupleElement(
-                         m::CustomCall(&conv, kCudnnConvForwardCallTarget,
+                         m::CustomCall(&conv, {kCudnnConvForwardCallTarget},
                                        m::Reshape(m::Parameter(0))
                                            .WithShape(S8, {1, 5, 4, 9, 9}),
                                        m::Reshape(m::Parameter(1))
@@ -293,7 +293,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, NoVectorizeTo4) {
                   window={size=2x2}, dim_labels=b01f_01io->b01f,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   CudnnVectorizeConvolutions pass({7, 5});
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
 
@@ -314,7 +314,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, NoVectorizeTo4IfOutputIsS32) {
                   window={size=2x2}, dim_labels=b01f_01io->b01f,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   SCOPED_TRACE(module->ToString());
   EXPECT_FALSE(changed);
@@ -333,7 +333,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, NoVectorizeTo4IfOutputIsF32) {
                   window={size=2x2}, dim_labels=b01f_01io->b01f,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   SCOPED_TRACE(module->ToString());
   EXPECT_FALSE(changed);
@@ -350,7 +350,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, VectorizeTo32) {
                   window={size=2x2}, dim_labels=b01f_01io->b01f,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -362,7 +362,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, VectorizeTo32) {
       root,
       GmockMatch(m::Tuple(
           m::Reshape(m::GetTupleElement(
-                         m::CustomCall(&conv, kCudnnConvForwardCallTarget,
+                         m::CustomCall(&conv, {kCudnnConvForwardCallTarget},
                                        m::Reshape(m::Parameter(0))
                                            .WithShape(S8, {10, 20, 30, 2, 32}),
                                        m::Reshape(m::Parameter(1))
@@ -385,7 +385,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, BiasAndSideInput) {
                   window={size=2x2}, dim_labels=b01f_01io->b01f,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -397,7 +397,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, BiasAndSideInput) {
       root,
       GmockMatch(m::Tuple(
           m::Reshape(m::GetTupleElement(
-                         m::CustomCall(&conv, kCudnnConvForwardCallTarget,
+                         m::CustomCall(&conv, {kCudnnConvForwardCallTarget},
                                        m::Reshape(m::Parameter(0))
                                            .WithShape(S8, {10, 20, 30, 2, 32}),
                                        m::Reshape(m::Parameter(1))
@@ -420,7 +420,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, NoVectorizeTo32) {
                   window={size=2x2}, dim_labels=b01f_01io->b01f,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 0}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -432,7 +432,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, NoVectorizeTo32) {
       root,
       GmockMatch(m::Tuple(
           m::Reshape(m::GetTupleElement(
-                         m::CustomCall(&conv, kCudnnConvForwardCallTarget,
+                         m::CustomCall(&conv, {kCudnnConvForwardCallTarget},
                                        m::Reshape(m::Parameter(0))
                                            .WithShape(S8, {10, 20, 30, 16, 4}),
                                        m::Reshape(m::Parameter(1))
@@ -455,7 +455,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, Vectorize4To32) {
                   custom_call_target="__cudnn$convForward",
                   backend_config="{foo: 42}"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -466,7 +466,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, Vectorize4To32) {
   auto conv_pat =
       m::GetTupleElement(
           m::CustomCall(
-              &conv, kCudnnConvForwardCallTarget,
+              &conv, {kCudnnConvForwardCallTarget},
               m::Reshape(m::Transpose(m::Reshape(m::Parameter(0))
                                           .WithShape(S8, {10, 20, 30, 2, 8, 4}))
                              .WithShape(S8, {10, 20, 30, 2, 8, 4}))
@@ -525,7 +525,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, Vectorize4To32NCHW) {
                   window={size=2x2}, dim_labels=bf01_io01->bf01,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -536,7 +536,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, Vectorize4To32NCHW) {
   auto conv_pat =
       m::GetTupleElement(
           m::CustomCall(
-              &conv, kCudnnConvForwardCallTarget,
+              &conv, {kCudnnConvForwardCallTarget},
               m::Reshape(m::Transpose(m::Reshape(m::Parameter(0))
                                           .WithShape(S8, {10, 2, 8, 20, 30, 4}))
                              .WithShape(S8, {10, 2, 20, 30, 8, 4}))
@@ -593,7 +593,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, Vectorize4To32VectorDimFirst) {
                   window={size=3x5}, dim_labels=?b01f_?01io->?b01f,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 5}, module.get()));
   EXPECT_TRUE(changed);
 
@@ -604,7 +604,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, Vectorize4To32VectorDimFirst) {
   auto conv_pat =
       m::GetTupleElement(
           m::CustomCall(
-              &conv, kCudnnConvForwardCallTarget,
+              &conv, {kCudnnConvForwardCallTarget},
               m::Reshape(m::Transpose(m::Reshape(m::Parameter(0))
                                           .WithShape(S8, {4, 10, 20, 30, 2, 8}))
                              .WithShape(S8, {8, 4, 10, 20, 30, 2}))
@@ -661,7 +661,7 @@ TEST_F(CudnnVectorizeConvolutionsTest, NoVectorize4To32) {
                   window={size=2x2}, dim_labels=b01f_01io->b01f,
                   custom_call_target="__cudnn$convForward"
   })")
-                    .ValueOrDie();
+                    .value();
   TF_ASSERT_OK_AND_ASSIGN(bool changed, Run({7, 0}, module.get()));
   EXPECT_FALSE(changed);
 }
