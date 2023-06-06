@@ -15,14 +15,16 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/python/traceback.h"
 
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/hash/hash.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
-#include "pybind11/pytypes.h"
+#include "pybind11/pytypes.h"  // from @pybind11
 #include "tensorflow/compiler/xla/python/exceptions.h"
 #include "tensorflow/compiler/xla/python/python_ref_manager.h"
 #include "tensorflow/tsl/platform/logging.h"

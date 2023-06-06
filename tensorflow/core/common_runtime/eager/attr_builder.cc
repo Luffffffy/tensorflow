@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/eager/attr_builder.h"
 
+#include <memory>
+
+#include "absl/status/status.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
 #include "tensorflow/core/framework/allocator.h"
@@ -82,7 +85,7 @@ Status AttrTypeMapForOp(const char* op_name, const AttrTypeMap** out,
 
   const OpDef* op_def = nullptr;
   Status s = OpDefForOp(op_name, &op_def);
-  if (errors::IsNotFound(s)) {
+  if (absl::IsNotFound(s)) {
     // If we did not find the op def, we assume `op_name` is a function.
     // If it is actually a misspelled op, user will get another error when
     // trying to run it.
@@ -174,8 +177,8 @@ Status AttrBuilder::Get(StringPiece attr_name,
 }
 
 AttrBuilder& AttrBuilder::NumInputs(int n) {
-  DCHECK(!node_def_finalized_) << "Calling NumInputs after BuildNodeDef.";
   num_inputs_ = n;
+  node_def_finalized_ = false;
   return *this;
 }
 
@@ -240,9 +243,10 @@ void AttrBuilder::AddAttrIfNotPresent(StringPiece attr_name,
 
 const NodeDef& AttrBuilder::BuildNodeDef() {
   if (node_def_finalized_) return node_def_;
-  if (!node_def_initialized_) {
-    InitializeNodeDef();
-  }
+  node_def_.Clear();
+  node_def_.set_name(op_name_);
+  node_def_.set_op(op_name_);
+
   for (int i = 0; i < num_inputs_; ++i) {
     node_def_.add_input("dummy_input");
   }
@@ -310,14 +314,6 @@ tensorflow::Fprint128 AttrBuilder::BuildCacheKeyForDevice(
         CacheKeyHelper(p.first, tensorflow::Fingerprint128(p.second)), &f);
   }
   return f;
-}
-
-void AttrBuilder::InitializeNodeDef() {
-  DCHECK(!node_def_initialized_);
-  node_def_.Clear();
-  node_def_.set_name(op_name_);
-  node_def_.set_op(op_name_);
-  node_def_initialized_ = true;
 }
 
 void AttrBuilder::GetNameAttrList(

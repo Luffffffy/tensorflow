@@ -65,10 +65,16 @@ bool ComputationLayout::LayoutIsSet() const {
 
 void ComputationLayout::Print(Printer* printer) const {
   printer->Append("(");
-  for (int i = 0; i < parameter_layouts_.size(); ++i) {
-    const auto& param_layout = parameter_layouts_[i];
-    if (i != 0) printer->Append(",");
-    param_layout.Print(printer);
+  if (!parameter_layouts_.empty()) {
+    parameter_layouts_[0].Print(printer);
+    for (int i = 1; i < parameter_layouts_.size(); ++i) {
+      if (i % 5 == 0) {
+        printer->Append(absl::StrFormat(", /*index=%lld*/", i));
+      } else {
+        printer->Append(", ");
+      }
+      parameter_layouts_[i].Print(printer);
+    }
   }
   printer->Append(")->");
   result_layout_.Print(printer);

@@ -32,10 +32,10 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/export_graphdef.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/import_model.h"
-#include "tensorflow/compiler/mlir/tensorflow/utils/compile_mlir_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/device_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
+#include "tensorflow/compiler/mlir/tf2xla/api/v0/compile_mlir_util.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/core/common_runtime/optimization_registry.h"
 #include "tensorflow/core/framework/function.h"
@@ -72,7 +72,8 @@ DTensorMlirPassRunner::DTensorMlirPassRunner()
 
 StatusOr<mlir::OwningOpRef<mlir::ModuleOp>>
 DTensorMlirPassRunner::ImportGraphToMlir(
-    const DeviceSet& device_set, bool is_func,
+    const DeviceSet& device_set, absl::string_view name, bool is_func,
+    const dtensor::Mesh& default_mesh,
     const FunctionLibraryDefinition& flib_def, const Graph& graph,
     Fprint128 cache_key) {
   GraphDebugInfo debug_info;
@@ -97,10 +98,15 @@ DTensorMlirPassRunner::ImportGraphToMlir(
   mlir::ModuleOp module = module_ref.value().get();
   AddDevicesToOp(module, &device_set);
 
+  module->setAttr(dtensor::kCustomDefaultMeshAttr,
+                  mlir::StringAttr::get(&context_, default_mesh.ToString()));
+
   // Tag the module for logging or not depending on flag.
-  if (!is_func && !dtensor::LogOpByOp())
+  if (!is_func && !dtensor::LogOpByOp(name))
     module->setAttr(dtensor::kDoNotLog, mlir::UnitAttr::get(&context_));
 
+  module->setAttr(dtensor::kEagerOperationName,
+                  mlir::StringAttr::get(&context_, name));
   // Set the cache key for the module as an attribute. This attribute will be
   // used to rename all private functions in the module (by appending the
   // cache key) so they have unique names.

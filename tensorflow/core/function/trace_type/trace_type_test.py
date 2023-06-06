@@ -16,8 +16,10 @@
 
 import collections
 import timeit
+import weakref
 
 from absl.testing import parameterized
+import numpy as np
 
 from tensorflow.core.function import trace_type
 from tensorflow.core.function.trace_type import default_types
@@ -235,7 +237,7 @@ class TraceTypeBuilderTest(test.TestCase, parameterized.TestCase):
 
     class MockWrapper(tuple):
       # Generated through trackable data structures:
-      # //tensorflow/python/training/tracking/data_structures.py
+      # //tensorflow/python/trackable/data_structures.py
       # With design pattern similar to Python functools:
       # https://docs.python.org/3/library/functools.html?highlight=__wrapped__#functools.update_wrapper
       __wrapped__ = ActualType(1, 2, 3)
@@ -343,6 +345,19 @@ class CastDefaultTypesTest(test.TestCase, parameterized.TestCase):
     self.assertIn('y', value)
     self.assertEqual(value['x'].dtype, dtypes.float32)
     self.assertEqual(value['y'].dtype, dtypes.float32)
+
+  def testNumpy(self):
+    ndarray = np.array([1, 2, 3])
+    ndarray_type = trace_type.from_value(ndarray)
+    self.assertEqual(
+        ndarray_type, default_types.TENSOR(ndarray.shape, ndarray.dtype)
+    )
+
+  def testWeakrefInput(self):
+    obj = DummyGenericClass()
+    ref = weakref.ref(obj)
+    with self.assertRaisesRegex(TypeError, 'weakref input .* not supported'):
+      trace_type.from_value(ref)
 
 
 class SignatureToTraceTypeTest(test.TestCase):

@@ -26,7 +26,7 @@ traced (a process known as retracing).
 """
 
 import abc
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Iterator
 
 from typing_extensions import Protocol
 from typing_extensions import runtime_checkable
@@ -161,7 +161,7 @@ class TraceType(metaclass=abc.ABCMeta):
     """
 
   @abc.abstractmethod
-  def placeholder_value(self, placeholder_context=None) -> Any:
+  def placeholder_value(self, placeholder_context) -> Any:
     """Creates a placeholder for tracing.
 
     tf.funcion traces with the placeholder value rather than the actual value.
@@ -177,7 +177,7 @@ class TraceType(metaclass=abc.ABCMeta):
 
     ```python
     class FruitTraceType:
-      def placeholder_value(self, placeholder_context=None):
+      def placeholder_value(self, placeholder_context):
         return Fruit()
     ```
     instructs tf.function to trace with the `Fruit()` objects
@@ -199,7 +199,7 @@ class TraceType(metaclass=abc.ABCMeta):
     """
 
   @doc_controls.do_not_doc_inheritable
-  def _to_tensors(self, value) -> List[core.Tensor]:
+  def _to_tensors(self, value: Any) -> List[core.Tensor]:
     """Breaks down a value of this type into Tensors.
 
     Args:
@@ -209,6 +209,26 @@ class TraceType(metaclass=abc.ABCMeta):
       List of Tensors.
     """
     del value
+    return []
+
+  @doc_controls.do_not_doc_inheritable
+  def _from_tensors(self, tensors: Iterator[core.Tensor]) -> Any:
+    """Regenerates a value of this type from Tensors.
+
+    Must use the same fixed amount of tensors as `_to_tensors`.
+
+    Args:
+      tensors: An iterator from which the tensors can be pulled.
+
+    Returns:
+      A value of this type.
+    """
+    del tensors
+    return self.placeholder_value(PlaceholderContext())
+
+  @doc_controls.do_not_doc_inheritable
+  def _flatten(self) -> List["TraceType"]:
+    """Returns a list of TensorSpecs corresponding to `_to_tensors` values."""
     return []
 
   @doc_controls.do_not_doc_inheritable
@@ -229,7 +249,7 @@ class TraceType(metaclass=abc.ABCMeta):
         self.placeholder_value().
     """
     assert value == self.placeholder_value(
-        PlaceholderContext()), f"Cannt cast {value!r} to type {self!r}."
+        PlaceholderContext()), f"Can not cast {value!r} to type {self!r}"
     return value
 
   @abc.abstractmethod

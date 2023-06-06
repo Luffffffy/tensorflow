@@ -41,7 +41,6 @@ def TFR_Dialect : Dialect {
   }];
 
   let cppNamespace = "::mlir::TFR";
-  let useFoldAPI = kEmitFoldAdaptorFolder;
 }
 
 //===----------------------------------------------------------------------===//
@@ -144,6 +143,8 @@ def TFR_CallOp : TFR_Op<"call", [CallOpInterface]> {
 
     // Return the callee of this operation.
     CallInterfaceCallable getCallableForCallee() { return getCalleeAttr(); }
+    // Sets the callee from the callable
+    void setCalleeFromCallable(CallInterfaceCallable callee);
   }];
 
   let assemblyFormat = [{

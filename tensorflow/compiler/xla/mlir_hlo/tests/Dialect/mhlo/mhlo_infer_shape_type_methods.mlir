@@ -49,6 +49,7 @@ func.func @broadcast(%a : tensor<3xi32>) -> tensor<1x2x3xindex> {
 // -----
 
 func.func @broadcast(%a : tensor<3xi32>) -> tensor<1x2x3xi32> {
+  // expected-error@+2 {{'mhlo.broadcast' op failed to infer returned types}}
   // expected-error@+1 {{Broadcast with negative dimension size -2}}
   %0 = "mhlo.broadcast"(%a) {broadcast_sizes = dense<[1, -2]> : tensor<2xi64>}
       : (tensor<3xi32>) -> tensor<1x2x3xi32>
@@ -96,6 +97,7 @@ func.func @pad_with_bounds(%arg0: tensor<3x?x?xf16, #mhlo.type_extensions<bounds
 // -----
 
 func.func @pad_with_negative_inferred_bounds(%arg0: tensor<3x?x?xf16, #mhlo.type_extensions<bounds = [?, 3, ?]>>, %arg1: tensor<f16>) -> tensor<*xindex> {
+  // expected-error@+2 {{'mhlo.pad' op failed to infer returned types}}
   // expected-error@+1 {{Padding result in negative bound for dimension 1}}
   %0 = "mhlo.pad"(%arg0, %arg1) {
     edge_padding_low = dense<[2, -10, 0]> : tensor<3xi64>,
@@ -317,6 +319,62 @@ func.func @concat_bounds_unranked_c1(
 
 // -----
 
+// This test covers all cases (except "error out") of inferBranchedDimAndBound()
+// CHECK-LABEL: func @if_bounds
+func.func @if_bounds(%pred : tensor<i1>,
+    %true_branch_operand : tensor<2x3x4x?x?x?xf32, #mhlo.type_extensions<bounds = [?, ?, ?, ?, ?, 6]>>,
+    %false_branch_operand : tensor<2x?x?x?x?x?xf32, #mhlo.type_extensions<bounds = [?, ?, 4, ?, 5, 7]>>) -> tensor<*xindex> {
+  %0 = "mhlo.if"(%pred) ({
+      "mhlo.return"(%true_branch_operand) : (
+        tensor<2x3x4x?x?x?xf32, #mhlo.type_extensions<bounds = [?, ?, ?, ?, ?, 6]>>) -> ()
+    }, {
+      "mhlo.return"(%false_branch_operand) : (
+        tensor<2x?x?x?x?x?xf32, #mhlo.type_extensions<bounds = [?, ?, 4, ?, 5, 7]>>) -> ()
+    }) : (tensor<i1>) -> tensor<*xf32>
+  // CHECK: types0 = tensor<2x?x?x?x?x?xf32, #mhlo.type_extensions<bounds = [?, ?, 4, ?, ?, 7]>>
+  %1 = "mhlo_test.get_return_types"(%0) : (tensor<*xf32>) -> tensor<*xindex>
+  func.return %1 : tensor<*xindex>
+}
+
+// -----
+
+func.func @if_bounds_unranked(%pred : tensor<i1>,
+    %true_branch_operand : tensor<2x3x4x?x?x?xf32, #mhlo.type_extensions<bounds = [?, ?, ?, ?, ?, 6]>>,
+    %false_branch_operand : tensor<*xf32>) -> tensor<*xindex> {
+  %0 = "mhlo.if"(%pred) ({
+      "mhlo.return"(%true_branch_operand) : (
+        tensor<2x3x4x?x?x?xf32, #mhlo.type_extensions<bounds = [?, ?, ?, ?, ?, 6]>>) -> ()
+    }, {
+      "mhlo.return"(%false_branch_operand) : (
+        tensor<*xf32>) -> ()
+    }) : (tensor<i1>) -> tensor<*xf32>
+  // CHECK: types0 = tensor<*xf32>
+  %1 = "mhlo_test.get_return_types"(%0) : (tensor<*xf32>) -> tensor<*xindex>
+  func.return %1 : tensor<*xindex>
+}
+
+// -----
+
+// This test covers only a few cases of inferBranchedDimAndBound() with more branches
+// as test "if_bounds" above covers all cases
+// CHECK-LABEL: func @case_bounds
+func.func @case_bounds(%index : tensor<i32>,
+    %branch_0_operand : tensor<2xf32, #mhlo.type_extensions<bounds = [?]>>,
+    %branch_2_operand : tensor<?xf32, #mhlo.type_extensions<bounds = [3]>>) -> tensor<*xindex> {
+  %0 = "mhlo.case"(%index) ({
+      "mhlo.return"(%branch_0_operand) : (tensor<2xf32, #mhlo.type_extensions<bounds = [?]>>) -> ()
+  }, {
+      "mhlo.return"(%branch_0_operand) : (tensor<2xf32, #mhlo.type_extensions<bounds = [?]>>) -> ()
+  }, {
+      "mhlo.return"(%branch_2_operand) : (tensor<?xf32, #mhlo.type_extensions<bounds = [3]>>) -> ()
+  }) : (tensor<i32>) -> tensor<*xf32>
+  // CHECK: types0 = tensor<?xf32, #mhlo.type_extensions<bounds = [3]>>
+  %1 = "mhlo_test.get_return_types"(%0) : (tensor<*xf32>) -> tensor<*xindex>
+  func.return %1 : tensor<*xindex>
+}
+
+// -----
+
 // CHECK-LABEL: while_bounds
 func.func @while_bounds(
   %while_arg_1: tensor<2x?xi32, #mhlo.type_extensions<bounds = [?, 4]>>,
@@ -352,6 +410,29 @@ func.func @gather(%operand : tensor<2x4x9xi32>, %start_indices : tensor<1x5x2xi3
   // CHECK: types0 = tensor<1x5x8xi32>
   %1 = "mhlo_test.get_return_types"(%res) : (tensor<1x5x8xi32>) -> tensor<1x5x8xindex>
   func.return %1 : tensor<1x5x8xindex>
+}
+
+// -----
+
+// CHECK-LABEL: @gather_bounds
+func.func @gather_bounds(%operand : tensor<?x?x?xi32, #mhlo.type_extensions<bounds = [2, 4, 8]>>,
+    %start_indices : tensor<?x?x?xi32, #mhlo.type_extensions<bounds = [16, 32, 64]>>)
+    -> tensor<*xindex> {
+  %res = "mhlo.gather"(%operand, %start_indices) {
+    dimension_numbers = #mhlo.gather<
+      collapsed_slice_dims = [0, 1],
+      index_vector_dim = 0,
+      offset_dims = [2],
+      start_index_map = [0, 1]
+    >,
+    indices_are_sorted = false,
+    slice_sizes = dense<[1, 1, 8]> : tensor<3xi64>
+  } : (tensor<?x?x?xi32, #mhlo.type_extensions<bounds = [2, 4, 8]>>, tensor<?x?x?xi32, #mhlo.type_extensions<bounds = [16, 32, 64]>>)
+  -> tensor<?x?x8xi32>
+
+  // CHECK: types0 = tensor<?x?x8xi32, #mhlo.type_extensions<bounds = [32, 64, ?]>>
+  %1 = "mhlo_test.get_return_types"(%res) : (tensor<?x?x8xi32>) -> tensor<*xindex>
+  func.return %1 : tensor<*xindex>
 }
 
 // -----
@@ -399,6 +480,7 @@ func.func @slice_with_bounds(%arg0: tensor<3x?x?xi32, #mhlo.type_extensions<boun
 // -----
 
 func.func @slice_with_index_larger_than_bound_dim(%arg0: tensor<3x?x?xi32, #mhlo.type_extensions<bounds = [?, 4, ?]>>) -> tensor<*xindex> {
+  // expected-error@+2 {{'mhlo.slice' op failed to infer returned types}}
   // expected-error@+1 {{limit index 5 is larger than dimension bound 4 in dimension 1}}
   %0 = "mhlo.slice"(%arg0) {start_indices = dense<[1, 0, 0]> : tensor<3xi64>, limit_indices = dense<[2, 5, 4]> : tensor<3xi64>, strides = dense<[1, 2, 2]> : tensor<3xi64>} : (tensor<3x?x?xi32, #mhlo.type_extensions<bounds = [?, 4, ?]>>) -> tensor<*xi32>
   %1 = "mhlo_test.get_return_types"(%0) : (tensor<*xi32>) -> tensor<*xindex>
@@ -813,7 +895,7 @@ func.func @scatter_bounds(%input_tensor: tensor<200x?x?xf32, #mhlo.type_extensio
 //===----------------------------------------------------------------------===//
 
 #CSR = #sparse_tensor.encoding<{
-  dimLevelType = ["dense", "compressed"]
+  lvlTypes = ["dense", "compressed"]
 }>
 
 // CHECK-LABEL: @tanh_sparsity
@@ -827,7 +909,7 @@ func.func @tanh_sparsity(%arg0: tensor<10x10xf32, #CSR>) -> tensor<10x10xindex> 
 // -----
 
 #CSR = #sparse_tensor.encoding<{
-  dimLevelType = ["dense", "compressed"]
+  lvlTypes = ["dense", "compressed"]
 }>
 
 // CHECK-LABEL: @abs_sparsity
@@ -841,7 +923,7 @@ func.func @abs_sparsity(%arg0: tensor<10x10xf32, #CSR>) -> tensor<10x10xindex> {
 // -----
 
 #CSR = #sparse_tensor.encoding<{
-  dimLevelType = ["dense", "compressed"]
+  lvlTypes = ["dense", "compressed"]
 }>
 
 // CHECK-LABEL: @real_sparsity
@@ -855,7 +937,7 @@ func.func @real_sparsity(%arg0: tensor<10x10xcomplex<f32>, #CSR>) -> tensor<10x1
 // -----
 
 #CSR = #sparse_tensor.encoding<{
-  dimLevelType = ["dense", "compressed"]
+  lvlTypes = ["dense", "compressed"]
 }>
 
 // CHECK-LABEL: @imag_sparsity
@@ -869,7 +951,7 @@ func.func @imag_sparsity(%arg0: tensor<10x10xcomplex<f32>, #CSR>) -> tensor<10x1
 // -----
 
 #CSR = #sparse_tensor.encoding<{
-  dimLevelType = ["dense", "compressed"]
+  lvlTypes = ["dense", "compressed"]
 }>
 
 // CHECK-LABEL: @complex_sparsity
@@ -1428,4 +1510,21 @@ func.func @select(%pred : tensor<i1>,
   // CHECK: types0 = tensor<1x2x3x?xf32, #mhlo.type_extensions<bounds = [?, ?, ?, 7]>>
   %1 = "mhlo_test.get_return_types"(%0) : (tensor<*xf32>) -> tensor<*xindex>
   func.return %1 : tensor<*xindex>
+}
+
+// -----
+
+// CHECK-LABEL: func @dynamic_gather
+func.func @dynamic_gather(%arg0: tensor<?x4xf32>, %arg1: tensor<1xi64>) -> tensor<*xindex> {
+  %0 = mhlo.constant dense<[1, 2]> : tensor<2xi32>
+  %1 = "mhlo.dynamic_gather"(%arg0, %arg1, %0) {
+    dimension_numbers = #mhlo.gather<
+      offset_dims = [0, 1],
+      start_index_map = [1]
+    >,
+    indices_are_sorted = true
+  } : (tensor<?x4xf32>, tensor<1xi64>, tensor<2xi32>) -> tensor<*xf32>
+  // CHECK: types0 = tensor<1x2xf32>
+  %2 = "mhlo_test.get_return_types"(%1) : (tensor<*xf32>) -> tensor<*xindex>
+  func.return %2 : tensor<*xindex>
 }

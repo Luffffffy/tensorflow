@@ -28,11 +28,11 @@ limitations under the License.
 #include "tensorflow/compiler/xla/hlo/ir/hlo_computation.h"
 #include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
 #include "tensorflow/compiler/xla/hlo/ir/hlo_module.h"
+#include "tensorflow/compiler/xla/hlo/utils/hlo_live_range.h"
 #include "tensorflow/compiler/xla/service/heap_simulator.h"
 #include "tensorflow/compiler/xla/service/hlo.pb.h"
 #include "tensorflow/compiler/xla/service/hlo_alias_analysis.h"
 #include "tensorflow/compiler/xla/service/hlo_dataflow_analysis.h"
-#include "tensorflow/compiler/xla/service/hlo_live_range.h"
 #include "tensorflow/compiler/xla/service/logical_buffer.h"
 #include "tensorflow/compiler/xla/service/memory_space_assignment.h"
 #include "tensorflow/compiler/xla/service/tuple_points_to_analysis.h"
@@ -379,6 +379,10 @@ class BufferAssignment {
   // Returns whether the given buffer has been assigned an allocation.
   bool HasAllocation(const HloValue& value) const;
 
+  // Returns whether the given (logical) buffer with the id has been assigned an
+  // allocation.
+  bool HasAllocation(HloValue::Id value_id) const;
+
   bool HasAllocation(const HloBuffer& buffer) const;
 
   // Returns the allocation that a particular LogicalBuffer has been assigned
@@ -470,7 +474,13 @@ class BufferAssignment {
   // every buffer associated with each allocation.
   std::string ToVerboseString() const;
   std::string BufferInfoString() const;
+
+  // Convert BufferAssignment to or from a proto.
   BufferAssignmentProto ToProto() const;
+  static StatusOr<std::unique_ptr<BufferAssignment>> FromProto(
+      const BufferAssignmentProto& proto, const HloModule* module,
+      BufferValue::SizeFunction buffer_size,
+      HloDataflowAnalysis::CanShareBuffer can_share_buffer);
 
   // Statistics for the assignment.  Values initialized to -1 are not always
   // collected; fragmentation is only collected for instructions that have a

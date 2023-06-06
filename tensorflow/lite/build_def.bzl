@@ -202,6 +202,9 @@ def tflite_jni_binary(
         clean_dep("//tensorflow:windows"): [],
         "//conditions:default": [
             "-Wl,--version-script,$(location {})".format(linkscript),
+            # copybara:uncomment_begin(google-only)
+            # "-Wl,--undefined-version",
+            # copybara:uncomment_end
             "-Wl,-soname," + name,
         ],
     })
@@ -674,7 +677,6 @@ def tflite_custom_c_library(
             op_resolver_deps,
             "//tensorflow/lite:builtin_ops",
             "//tensorflow/lite/c:c_api_without_op_resolver_without_alwayslink",
-            "//tensorflow/lite/core:private_headers",
             # TODO(bekzhan): Remove this dependency after we move c_api_opaque.h to tflite/core/.
             "//tensorflow/lite/core/c:private_c_api_types",
             "//tensorflow/lite/core/c:private_c_api_without_op_resolver_without_alwayslink",
@@ -692,7 +694,12 @@ def tflite_combine_cc_tests(
         extra_build_test_tags = [],
         generate_cc_library = False,
         **kwargs):
-    """Combine all certain cc_tests into a single cc_test and a build_test.
+    """Combine certain cc_tests into a single cc_test and a build_test.
+
+    This rule should normally be placed at the bottom of a package.
+    Any cc_test rules that appear after the call to this rule will not
+    be included in the combined cc_test rule, even if they meet the
+    other conditions.
 
     Args:
       name: the name of the combined cc_test.

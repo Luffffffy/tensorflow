@@ -5685,6 +5685,45 @@ func CollateTPUEmbeddingMemory(scope *Scope, memory_configs []tf.Output) (merged
 	return op.Output(0)
 }
 
+// CollectiveAllToAllV2Attr is an optional argument to CollectiveAllToAllV2.
+type CollectiveAllToAllV2Attr func(optionalAttr)
+
+// CollectiveAllToAllV2CommunicationHint sets the optional communication_hint attribute to value.
+// If not specified, defaults to "auto"
+func CollectiveAllToAllV2CommunicationHint(value string) CollectiveAllToAllV2Attr {
+	return func(m optionalAttr) {
+		m["communication_hint"] = value
+	}
+}
+
+// CollectiveAllToAllV2TimeoutSeconds sets the optional timeout_seconds attribute to value.
+// If not specified, defaults to 0
+func CollectiveAllToAllV2TimeoutSeconds(value float32) CollectiveAllToAllV2Attr {
+	return func(m optionalAttr) {
+		m["timeout_seconds"] = value
+	}
+}
+
+// Mutually exchanges multiple tensors of identical type and shape.
+func CollectiveAllToAllV2(scope *Scope, input tf.Output, group_size tf.Output, group_key tf.Output, instance_key tf.Output, ordering_token []tf.Output, optional ...CollectiveAllToAllV2Attr) (data tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
+	}
+	opspec := tf.OpSpec{
+		Type: "CollectiveAllToAllV2",
+		Input: []tf.Input{
+			input, group_size, group_key, instance_key, tf.OutputList(ordering_token),
+		},
+		Attrs: attrs,
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
 // CollectiveAllToAllV3Attr is an optional argument to CollectiveAllToAllV3.
 type CollectiveAllToAllV3Attr func(optionalAttr)
 
@@ -6648,10 +6687,10 @@ func Concat(scope *Scope, concat_dim tf.Output, values []tf.Output) (output tf.O
 // Arguments:
 //
 //	concat_dim: The dimension along which to concatenate.
-//	shape: The `N` int32 vectors representing shape of tensors being concatenated.
+//	shape: The `N` int32 or int64 vectors representing shape of tensors being concatenated.
 //
-// Returns The `N` int32 vectors representing the starting offset
-// of input tensors within the concatenated output.
+// Returns The `N` vectors representing the starting offset
+// of input tensors within the concatenated output with type matching `shape`.
 func ConcatOffset(scope *Scope, concat_dim tf.Output, shape []tf.Output) (offset []tf.Output) {
 	if scope.Err() != nil {
 		return
@@ -10249,6 +10288,17 @@ func DataServiceDatasetV2(scope *Scope, dataset_id tf.Output, processing_mode tf
 	return op.Output(0)
 }
 
+// DatasetCardinalityAttr is an optional argument to DatasetCardinality.
+type DatasetCardinalityAttr func(optionalAttr)
+
+// DatasetCardinalityCardinalityOptions sets the optional cardinality_options attribute to value.
+// If not specified, defaults to ""
+func DatasetCardinalityCardinalityOptions(value string) DatasetCardinalityAttr {
+	return func(m optionalAttr) {
+		m["cardinality_options"] = value
+	}
+}
+
 // Returns the cardinality of `input_dataset`.
 //
 // Returns the cardinality of `input_dataset`.
@@ -10259,15 +10309,20 @@ func DataServiceDatasetV2(scope *Scope, dataset_id tf.Output, processing_mode tf
 //
 // Returns The cardinality of `input_dataset`. Named constants are used to represent
 // infinite and unknown cardinality.
-func DatasetCardinality(scope *Scope, input_dataset tf.Output) (cardinality tf.Output) {
+func DatasetCardinality(scope *Scope, input_dataset tf.Output, optional ...DatasetCardinalityAttr) (cardinality tf.Output) {
 	if scope.Err() != nil {
 		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
 	}
 	opspec := tf.OpSpec{
 		Type: "DatasetCardinality",
 		Input: []tf.Input{
 			input_dataset,
 		},
+		Attrs: attrs,
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
@@ -10671,6 +10726,115 @@ func DebugIdentityV2(scope *Scope, input tf.Output, optional ...DebugIdentityV2A
 	}
 	opspec := tf.OpSpec{
 		Type: "DebugIdentityV2",
+		Input: []tf.Input{
+			input,
+		},
+		Attrs: attrs,
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
+// DebugIdentityV3Attr is an optional argument to DebugIdentityV3.
+type DebugIdentityV3Attr func(optionalAttr)
+
+// DebugIdentityV3DeviceName sets the optional device_name attribute to value.
+//
+// value: Name of the device on which the tensor resides.
+// If not specified, defaults to ""
+func DebugIdentityV3DeviceName(value string) DebugIdentityV3Attr {
+	return func(m optionalAttr) {
+		m["device_name"] = value
+	}
+}
+
+// DebugIdentityV3TensorName sets the optional tensor_name attribute to value.
+//
+// value: Name of the input tensor.
+// If not specified, defaults to ""
+func DebugIdentityV3TensorName(value string) DebugIdentityV3Attr {
+	return func(m optionalAttr) {
+		m["tensor_name"] = value
+	}
+}
+
+// DebugIdentityV3IoOfNode sets the optional io_of_node attribute to value.
+//
+// value: Name of the node of which the tensor is an input or output.
+// If not specified, defaults to ""
+func DebugIdentityV3IoOfNode(value string) DebugIdentityV3Attr {
+	return func(m optionalAttr) {
+		m["io_of_node"] = value
+	}
+}
+
+// DebugIdentityV3IsInput sets the optional is_input attribute to value.
+//
+// value: If true, the tensor is an input of the node; otherwise the output.
+// If not specified, defaults to false
+func DebugIdentityV3IsInput(value bool) DebugIdentityV3Attr {
+	return func(m optionalAttr) {
+		m["is_input"] = value
+	}
+}
+
+// DebugIdentityV3IoIndex sets the optional io_index attribute to value.
+//
+// value: The index of which the tensor is an input or output of the node.
+// If not specified, defaults to -1
+func DebugIdentityV3IoIndex(value int64) DebugIdentityV3Attr {
+	return func(m optionalAttr) {
+		m["io_index"] = value
+	}
+}
+
+// DebugIdentityV3DebugUrls sets the optional debug_urls attribute to value.
+//
+// value: List of URLs to debug targets, e.g.,
+//
+//	file:///foo/tfdbg_dump, grpc:://localhost:11011
+//
+// If not specified, defaults to {}
+func DebugIdentityV3DebugUrls(value []string) DebugIdentityV3Attr {
+	return func(m optionalAttr) {
+		m["debug_urls"] = value
+	}
+}
+
+// DebugIdentityV3GatedGrpc sets the optional gated_grpc attribute to value.
+//
+// value: Whether this op will be gated. If any of the debug_urls of this
+//
+//	debug node is of the grpc:// scheme, when the value of this attribute is set
+//	to True, the data will not actually be sent via the grpc stream unless this
+//	debug op has been enabled at the debug_url. If all of the debug_urls of this
+//	debug node are of the grpc:// scheme and the debug op is enabled at none of
+//	them, the output will be an empty Tensor.
+//
+// If not specified, defaults to false
+func DebugIdentityV3GatedGrpc(value bool) DebugIdentityV3Attr {
+	return func(m optionalAttr) {
+		m["gated_grpc"] = value
+	}
+}
+
+// Provides an identity mapping of the non-Ref type input tensor for debugging.
+//
+// Provides an identity mapping of the non-Ref type input tensor for debugging.
+//
+// Arguments:
+//
+//	input: Input tensor, non-Reference type
+func DebugIdentityV3(scope *Scope, input tf.Output, optional ...DebugIdentityV3Attr) (output tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
+	}
+	opspec := tf.OpSpec{
+		Type: "DebugIdentityV3",
 		Input: []tf.Input{
 			input,
 		},
@@ -22062,8 +22226,8 @@ func Lgamma(scope *Scope, x tf.Output) (y tf.Output) {
 // Generates values in an interval.
 //
 // A sequence of `num` evenly-spaced values are generated beginning at `start`.
-// If `num > 1`, the values in the sequence increase by `stop - start / num - 1`,
-// so that the last one is exactly `stop`.
+// If `num > 1`, the values in the sequence increase by
+// `(stop - start) / (num - 1)`, so that the last one is exactly `stop`.
 //
 // For example:
 //
@@ -42571,6 +42735,76 @@ func SegmentMax(scope *Scope, data tf.Output, segment_ids tf.Output) (output tf.
 	return op.Output(0)
 }
 
+// Computes the maximum along segments of a tensor.
+//
+// Read
+// [the section on segmentation](https://tensorflow.org/api_docs/python/tf/math#Segmentation)
+// for an explanation of segments.
+//
+// Computes a tensor such that
+// \\(output_i = \max_j(data_j)\\) where `max` is over `j` such
+// that `segment_ids[j] == i`.
+//
+// If the maximum is empty for a given segment ID `i`, it outputs the smallest
+// possible value for the specific numeric type,
+// `output[i] = numeric_limits<T>::lowest()`.
+//
+// Note: That this op is currently only supported with jit_compile=True.
+//
+// Caution: On CPU, values in `segment_ids` are always validated to be sorted,
+// and an error is thrown for indices that are not increasing. On GPU, this
+// does not throw an error for unsorted indices. On GPU, out-of-order indices
+// result in safe but unspecified behavior, which may include treating
+// out-of-order indices as the same as a smaller following index.
+//
+// The only difference with SegmentMax is the additional input  `num_segments`.
+// This helps in evaluating the output shape in compile time.
+// `num_segments` should be consistent with segment_ids.
+// e.g. Max(segment_ids) should be equal to `num_segments` - 1 for a 1-d segment_ids
+// With inconsistent num_segments, the op still runs. only difference is,
+// the output takes the size of num_segments irrespective of size of segment_ids and data.
+// for num_segments less than expected output size, the last elements are ignored
+// for num_segments more than the expected output size, last elements are assigned
+// smallest possible value for the specific numeric type.
+//
+// For example:
+//
+// >>> @tf.function(jit_compile=True)
+// ... def test(c):
+// ...   return tf.raw_ops.SegmentMaxV2(data=c, segment_ids=tf.constant([0, 0, 1]), num_segments=2)
+// >>> c = tf.constant([[1,2,3,4], [4, 3, 2, 1], [5,6,7,8]])
+// >>> test(c).numpy()
+// array([[4, 3, 3, 4],
+//
+//	[5, 6, 7, 8]], dtype=int32)
+//
+// Arguments:
+//
+//	segment_ids: A 1-D tensor whose size is equal to the size of `data`'s
+//
+// first dimension.  Values should be sorted and can be repeated.
+// The values must be less than `num_segments`.
+//
+// Caution: The values are always validated to be sorted on CPU, never validated
+// on GPU.
+//
+// Returns Has same shape as data, except for the first `segment_ids.rank`
+// dimensions, which are replaced with a single dimensionw which has size
+// `num_segments`.
+func SegmentMaxV2(scope *Scope, data tf.Output, segment_ids tf.Output, num_segments tf.Output) (output tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	opspec := tf.OpSpec{
+		Type: "SegmentMaxV2",
+		Input: []tf.Input{
+			data, segment_ids, num_segments,
+		},
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
 // Computes the mean along segments of a tensor.
 //
 // Read
@@ -42677,6 +42911,76 @@ func SegmentMin(scope *Scope, data tf.Output, segment_ids tf.Output) (output tf.
 		Type: "SegmentMin",
 		Input: []tf.Input{
 			data, segment_ids,
+		},
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
+// Computes the minimum along segments of a tensor.
+//
+// Read
+// [the section on segmentation](https://tensorflow.org/api_docs/python/tf/math#Segmentation)
+// for an explanation of segments.
+//
+// Computes a tensor such that
+// \\(output_i = \min_j(data_j)\\) where `min` is over `j` such
+// that `segment_ids[j] == i`.
+//
+// If the minimum is empty for a given segment ID `i`, it outputs the largest
+// possible value for the specific numeric type,
+// `output[i] = numeric_limits<T>::max()`.
+//
+// Note: That this op is currently only supported with jit_compile=True.
+//
+// Caution: On CPU, values in `segment_ids` are always validated to be sorted,
+// and an error is thrown for indices that are not increasing. On GPU, this
+// does not throw an error for unsorted indices. On GPU, out-of-order indices
+// result in safe but unspecified behavior, which may include treating
+// out-of-order indices as the same as a smaller following index.
+//
+// The only difference with SegmentMin is the additional input  `num_segments`.
+// This helps in evaluating the output shape in compile time.
+// `num_segments` should be consistent with segment_ids.
+// e.g. Max(segment_ids) should be equal to `num_segments` - 1 for a 1-d segment_ids
+// With inconsistent num_segments, the op still runs. only difference is,
+// the output takes the size of num_segments irrespective of size of segment_ids and data.
+// for num_segments less than expected output size, the last elements are ignored
+// for num_segments more than the expected output size, last elements are assigned
+// the largest possible value for the specific numeric type.
+//
+// For example:
+//
+// >>> @tf.function(jit_compile=True)
+// ... def test(c):
+// ...   return tf.raw_ops.SegmentMinV2(data=c, segment_ids=tf.constant([0, 0, 1]), num_segments=2)
+// >>> c = tf.constant([[1,2,3,4], [4, 3, 2, 1], [5,6,7,8]])
+// >>> test(c).numpy()
+// array([[1, 2, 2, 1],
+//
+//	[5, 6, 7, 8]], dtype=int32)
+//
+// Arguments:
+//
+//	segment_ids: A 1-D tensor whose size is equal to the size of `data`'s
+//
+// first dimension.  Values should be sorted and can be repeated.
+// The values must be less than `num_segments`.
+//
+// Caution: The values are always validated to be sorted on CPU, never validated
+// on GPU.
+//
+// Returns Has same shape as data, except for the first `segment_ids.rank`
+// dimensions, which are replaced with a single dimensionw which has size
+// `num_segments`.
+func SegmentMinV2(scope *Scope, data tf.Output, segment_ids tf.Output, num_segments tf.Output) (output tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	opspec := tf.OpSpec{
+		Type: "SegmentMinV2",
+		Input: []tf.Input{
+			data, segment_ids, num_segments,
 		},
 	}
 	op := scope.AddOperation(opspec)
@@ -43341,7 +43645,8 @@ func SetSizeValidateIndices(value bool) SetSizeAttr {
 // allowed but ignored.
 //
 // If `validate_indices` is `True`, this op validates the order and range of `set`
-// indices.
+// indices. Setting is to `False` while passing invalid arguments results in
+// undefined behavior.
 //
 // Arguments:
 //
@@ -49348,6 +49653,37 @@ func StatsAggregatorSummary(scope *Scope, iterator tf.Output) (summary tf.Output
 	return op.Output(0)
 }
 
+// Stochastically cast a given tensor from floats to ints.
+//
+// The values are cast with a deterministic pseudo-random tensor from a uniform distribution generated from user given key, counter, algorithm. Values will saturate if out of the specified integer type range, and will become zero if inputs are NaN.
+//
+// The outputs are a deterministic function of `input`, `key`, `counter`, `alg`.
+//
+// Arguments:
+//
+//	input: The operand to stochastically cast to int.
+//	key: Key for the counter-based RNG algorithm (shape uint64[1]).
+//	counter: Initial counter for the counter-based RNG algorithm (shape uint64[2] or uint64[1] depending on the algorithm). If a larger vector is given, only the needed portion on the left (i.e. [:N]) will be used.
+//	alg: The RNG algorithm (shape int32[]).
+//	Tout: The type of the output.
+//
+// Returns The cast result with the same shape as the input.
+func StochasticCastToInt(scope *Scope, input tf.Output, key tf.Output, counter tf.Output, alg tf.Output, Tout tf.DataType) (output tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	attrs := map[string]interface{}{"Tout": Tout}
+	opspec := tf.OpSpec{
+		Type: "StochasticCastToInt",
+		Input: []tf.Input{
+			input, key, counter, alg,
+		},
+		Attrs: attrs,
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
 // Stops gradient computation.
 //
 // When executed in a graph, this op outputs its input tensor as-is.
@@ -53816,6 +54152,14 @@ func TopKV2Sorted(value bool) TopKV2Attr {
 	}
 }
 
+// TopKV2IndexType sets the optional index_type attribute to value.
+// If not specified, defaults to DT_INT32
+func TopKV2IndexType(value tf.DataType) TopKV2Attr {
+	return func(m optionalAttr) {
+		m["index_type"] = value
+	}
+}
+
 // Finds values and indices of the `k` largest elements for the last dimension.
 //
 // If the input is a vector (rank-1), finds the `k` largest entries in the vector
@@ -57308,76 +57652,6 @@ func XlaBroadcastHelper(scope *Scope, lhs tf.Output, rhs tf.Output, broadcast_di
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0), op.Output(1)
-}
-
-// Temporary op for experimenting with jax2tf.
-//
-// DO NOT USE THIS OP. It has no backwards compatibility guarantees. It is also
-// very likely to change. This op will be used only in jax2tf under an
-// experimental flag.
-//
-// This is an experimental op to allow a smooth evolution of jax2tf towards
-// emitting and serializing StableHLO directly from JAX.
-//
-// The serialized module must return a tuple if and only if the Sout is an empty
-// list or a list with more than 1 elements. The length of Tout and Sout must
-// match. This op always returns a tuple of results, even if the module returns
-// a single result.
-//
-// The handling of dynamic shapes is work-in-progress. At the moment, the
-// JAX lowering for dynamic shapes will prepend one dimension parameter to the
-// serialized module for each dimension whose value must be passed in.
-// The "args" correspond to the non-dimension arguments. During compilation
-// we compute the values of the dimension arguments based on the static shapes of
-// the "args". In order to do this, we encode for each dimension argument a
-// specification of how to compute its value, as a string, in the form
-// "<arg_idx>.<axis_idx>".
-// E.g., the specification "2.1" denotes the value args[2].shape[1].
-//
-// Arguments:
-//
-//	args: A list of `Tensor` with possibly different types to be passed as arguments
-//
-// to the HLO module. These are all non-dimension arguments. The dimension
-// arguments are computed at JIT time.
-//
-//	version: Changes when we change the semantics of the op, to support backwards
-//
-// compatibility. Version 1 carries an MHLO text or bytecode `module`. From
-// version 2, the op carries a StableHLO text or bytecode `module`.
-//
-//	module: A serialized computation, a text or bytecode representation of
-//
-// an mlir.Module.
-//
-//	Sout: List of output tensor shapes.
-//	Tout: List of output tensor data types.
-//	dim_args_spec: the specification for the dimension arguments, one for each
-//
-// dimension argument. In absence of dynamic shapes this list is empty.
-func XlaCallModule(scope *Scope, args []tf.Output, version int64, module string, Sout []tf.Shape, Tout []tf.DataType, dim_args_spec []string) (output []tf.Output) {
-	if scope.Err() != nil {
-		return
-	}
-	attrs := map[string]interface{}{"version": version, "module": module, "Sout": Sout, "Tout": Tout, "dim_args_spec": dim_args_spec}
-	opspec := tf.OpSpec{
-		Type: "XlaCallModule",
-		Input: []tf.Input{
-			tf.OutputList(args),
-		},
-		Attrs: attrs,
-	}
-	op := scope.AddOperation(opspec)
-	if scope.Err() != nil {
-		return
-	}
-	var idx int
-	var err error
-	if output, idx, err = makeOutputList(op, idx, "output"); err != nil {
-		scope.UpdateErr("XlaCallModule", err)
-		return
-	}
-	return output
 }
 
 // XlaConcatNDAttr is an optional argument to XlaConcatND.

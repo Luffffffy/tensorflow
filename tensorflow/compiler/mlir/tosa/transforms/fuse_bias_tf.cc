@@ -19,7 +19,10 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <numeric>
+#include <optional>
+#include <utility>
 
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
@@ -43,7 +46,7 @@ namespace {
 
 class FuseBiasTF : public impl::TosaFusebiasTFPassBase<FuseBiasTF> {
  public:
-  explicit FuseBiasTF() {}
+  explicit FuseBiasTF() = default;
   void runOnOperation() override;
 };
 
@@ -119,7 +122,7 @@ LogicalResult ConvertTFBiasAddOp::matchAndRewrite(
           op, "bias dimension must match filter output channels");
     }
 
-    llvm::Optional<Value> result = convertTFConv3DCommon(
+    std::optional<Value> result = convertTFConv3DCommon(
         rewriter, op, output_type, tf_conv3d_op.getInput(),
         tf_conv3d_op.getFilter(), bias, tf_conv3d_op.getStrides(),
         tf_conv3d_op.getDilations(), tf_conv3d_op.getPadding(),

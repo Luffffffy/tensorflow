@@ -213,7 +213,10 @@ void AllocateAndParseFlags() {
   ops_flags = new XlaOpsCommonFlags;
   ops_flags->tf_xla_always_defer_compilation = false;
   ops_flags->tf_xla_async_compilation = false;
-  ops_flags->tf_xla_use_device_api = false;
+  ops_flags->tf_xla_use_device_api.enabled_for_xla_launch_ = true;
+  ops_flags->tf_xla_use_device_api.enabled_for_compile_on_demand_ = true;
+  ops_flags->tf_xla_use_device_api.enabled_for_compile_and_run_ = false;
+  ops_flags->tf_xla_use_device_api.enabled_for_all_ = false;
 
   // The `enable_mlir_bridge` flag allows the user to explicitly request that
   // their program is (or isn't) compiled using the MLIR-based TF-to-XLA bridge.
@@ -229,6 +232,7 @@ void AllocateAndParseFlags() {
   bool enable_mlir_convert_control_to_data_outputs_pass = false;
   // Dump graphs in TFG dialect.
   bool use_tfg_graph_dumper = false;
+  bool enable_mlir_generic_outside_compilation = false;
 
   flag_list = new std::vector<Flag>(
       {Flag("tf_xla_enable_lazy_compilation",
@@ -266,9 +270,25 @@ void AllocateAndParseFlags() {
             "When lazy compilation is enabled, asynchronous compilation starts "
             "the cluster compilation in the background, and the fallback path "
             "is executed until the compilation has finished."),
-       Flag("tf_xla_use_device_api", &ops_flags->tf_xla_use_device_api,
-            "If true, uses the Device API (PjRt) for single device compilation."
-            " Defaults to false."),
+       Flag("tf_xla_use_device_api_for_xla_launch",
+            &ops_flags->tf_xla_use_device_api.enabled_for_xla_launch_,
+            "If true, uses Device API (PjRt) for single device compilation and "
+            "execution of functions marked for JIT compilation i.e. "
+            "jit_compile=True. Defaults to false."),
+       Flag("tf_xla_use_device_api_for_compile_on_demand",
+            &ops_flags->tf_xla_use_device_api.enabled_for_compile_on_demand_,
+            "If true, uses Device API (PjRt) for compiling and executing ops "
+            "one by one in 'on-demand' mode. Defaults to false."),
+       Flag("tf_xla_use_device_api_for_auto_jit",
+            &ops_flags->tf_xla_use_device_api.enabled_for_compile_and_run_,
+            "If true, uses Device API (PjRt) for compilation and execution "
+            "when auto-clustering is enabled. Defaults to false."),
+       Flag("tf_xla_use_device_api",
+            &ops_flags->tf_xla_use_device_api.enabled_for_all_,
+            "If true, uses Device API (PjRt) for compilation and execution "
+            "of ops one-by-one in 'on-demand' mode, for functions marked for "
+            "JIT compilation, or when auto-clustering is enabled. Defaults to "
+            "false."),
 
        Flag("tf_mlir_enable_mlir_bridge", &enable_mlir_bridge,
             "Enables experimental MLIR-Based TensorFlow Compiler Bridge.",
@@ -283,7 +303,11 @@ void AllocateAndParseFlags() {
             "MLIR-Based TensorFlow Compiler Bridge."),
        Flag("tf_dump_graphs_in_tfg", &use_tfg_graph_dumper,
             "When tf_dump_graphs_in_tfg is true, graphs after transformations "
-            "are dumped in MLIR TFG dialect and not in GraphDef")});
+            "are dumped in MLIR TFG dialect and not in GraphDef"),
+       Flag("tf_mlir_enable_generic_outside_compilation",
+            &enable_mlir_generic_outside_compilation,
+            "Enables OutsideCompilation passes for MLIR-Based TensorFlow "
+            "Generic Compiler Bridge.")});
 
   AppendMarkForCompilationPassFlagsInternal(flag_list);
   xla::ParseFlagsFromEnvAndDieIfUnknown("TF_XLA_FLAGS", *flag_list);
@@ -303,6 +327,8 @@ void AllocateAndParseFlags() {
       enable_mlir_merge_control_flow_pass;
   mlir_flags->tf_mlir_enable_convert_control_to_data_outputs_pass =
       enable_mlir_convert_control_to_data_outputs_pass;
+  mlir_flags->tf_mlir_enable_generic_outside_compilation =
+      enable_mlir_generic_outside_compilation;
 
   if (use_tfg_graph_dumper) {
     UseMlirForGraphDump(MlirDumpConfig{}.elide_large_attributes().emit_dialect(

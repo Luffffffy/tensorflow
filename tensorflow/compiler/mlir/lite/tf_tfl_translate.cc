@@ -15,10 +15,12 @@ limitations under the License.
 
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <optional>
+#include <unordered_set>
+#include <vector>
 
 #include "absl/strings/str_split.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -308,7 +310,7 @@ int main(int argc, char **argv) {
   });
 
   std::string result;
-  llvm::Optional<tensorflow::Session *> session = std::nullopt;
+  std::optional<tensorflow::Session *> session = std::nullopt;
   if (bundle) session = bundle->GetSession();
   auto status = tensorflow::ConvertTFExecutorToTFLOrFlatbuffer(
       module.value().get(), output_mlir, toco_flags, pass_config, tags,

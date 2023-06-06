@@ -14,7 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 // See docs in ../ops/nn_ops.cc.
-#ifdef INTEL_MKL
+#if defined(INTEL_MKL) && !defined(ENABLE_ONEDNN_V3)
 #define EIGEN_USE_THREADS
 
 #include "tensorflow/core/framework/op_kernel.h"
@@ -136,6 +136,7 @@ class MklMaxPoolingOp : public MklPoolingForwardOpBase<T> {
           padding_right, dnnl::algorithm::pooling_max, pooling_prop_kind,
           static_cast<memory::format_tag>(this->data_format_mkldnn_), input_md,
           this->native_format_);
+      MklDnnThreadPool eigen_tp(context);
       pooling_fwd = MklPoolingFwdPrimitiveFactory<T>::Get(fwdParams);
       // Allocate output tensor.
       this->AllocateOutputTensor(context, *(pooling_fwd->GetPoolingFwdPd()),
@@ -148,7 +149,7 @@ class MklMaxPoolingOp : public MklPoolingForwardOpBase<T> {
 
       T* dst_data = output_tensor->flat<T>().data();
       std::shared_ptr<stream> fwd_cpu_stream;
-      MklDnnThreadPool eigen_tp(context);
+
       fwd_cpu_stream.reset(CreateStream(&eigen_tp, pooling_fwd->GetEngine()));
 
       if (int8_forward_inference) {
@@ -180,8 +181,8 @@ class MklMaxPoolingOp : public MklPoolingForwardOpBase<T> {
                                   output_min_mkl_shape, this->native_format_);
         AllocateOutputSetMklShape(context, 2, &output_max, {},
                                   output_max_mkl_shape, this->native_format_);
-        output_min->flat<float>()(0) = min_input;
-        output_max->flat<float>()(0) = max_input;
+        output_min->scalar<float>()() = min_input;
+        output_max->scalar<float>()() = max_input;
       } else {
         MklDnnData<uint8> dnn_data_wksp(&cpu_engine_);
         AllocateWorkspaceTensor(context, *(pooling_fwd->GetPoolingFwdPd()),
@@ -319,11 +320,12 @@ class MklMaxPoolingGradOp : public MklPoolingBackwardOpBase<T> {
           prop_kind::forward_training,
           static_cast<memory::format_tag>(this->data_format_mkldnn_), src_md,
           this->native_format_);
+      MklDnnThreadPool eigen_tp(context);
       MklPoolingBwdPrimitive<T>* pooling_bwd =
           MklPoolingBwdPrimitiveFactory<T>::Get(bwdParams);
 
       std::shared_ptr<stream> bwd_cpu_stream;
-      MklDnnThreadPool eigen_tp(context);
+
       bwd_cpu_stream.reset(CreateStream(&eigen_tp, pooling_bwd->GetEngine()));
       // Allocate output tensor and memory primitive.
       Tensor* output_tensor = nullptr;
@@ -441,6 +443,13 @@ REGISTER_KERNEL_BUILDER(Name("_MklQuantizedMaxPool")
                             .TypeConstraint<qint8>("T")
                             .Label(mkl_op_registry::kMklQuantizedOpLabel),
                         MklMaxPoolingOp<CPUDevice, qint8, true>);
+
+REGISTER_KERNEL_BUILDER(
+    Name("_QuantizedMaxPool3D").Device(DEVICE_CPU).TypeConstraint<quint8>("T"),
+    MklMaxPoolingOp<CPUDevice, quint8, true>);
+REGISTER_KERNEL_BUILDER(
+    Name("_QuantizedMaxPool3D").Device(DEVICE_CPU).TypeConstraint<qint8>("T"),
+    MklMaxPoolingOp<CPUDevice, qint8, true>);
 }  // namespace tensorflow
 
-#endif  // INTEL_MKL
+#endif  // INTEL_MKL && !ENABLE_ONEDNN_V3

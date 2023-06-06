@@ -145,7 +145,7 @@ SmallVector<IntType> extractVector(ArrayAttr arrayAttr) {
 
 InterpreterValue bitcast(InterpreterState&, vector::BitCastOp op,
                          const InterpreterValue& vector) {
-  ShapedType ty = op->getResultTypes()[0];
+  ShapedType ty = cast<ShapedType>(op->getResultTypes()[0]);
   auto flattened = vector.coerceLayout({});
   auto buffer = flattened.buffer();
   auto view = flattened.view();
@@ -166,13 +166,14 @@ InterpreterValue broadcast(InterpreterState&, vector::BroadcastOp broadcast,
   auto& resultView = result.view();
 
   // Insert additional leading stride 0 dims.
-  SmallVector<int64_t> strides(broadcast.getVectorType().getRank());
+  SmallVector<int64_t> strides(broadcast.getResultVectorType().getRank());
   llvm::copy(llvm::reverse(resultView.strides), strides.rbegin());
   // Zero out broadcast dimension strides.
   for (int64_t i : broadcast.computeBroadcastedUnitDims()) strides[i] = 0;
 
   resultView.strides = std::move(strides);
-  resultView.sizes = llvm::to_vector(broadcast.getVectorType().getShape());
+  resultView.sizes =
+      llvm::to_vector(broadcast.getResultVectorType().getShape());
   return result;
 }
 
@@ -546,7 +547,7 @@ InterpreterValue outerProduct(InterpreterState&,
                               const InterpreterValue& lhs,
                               const InterpreterValue& rhs,
                               std::optional<InterpreterValue> acc) {
-  ShapedType ty = outerproduct->getResultTypes()[0];
+  ShapedType ty = cast<ShapedType>(outerproduct->getResultTypes()[0]);
   return dispatchScalarType(ty, [&](auto dummy) -> InterpreterValue {
     using T = decltype(dummy);
     using TT = TensorOrMemref<T>;
@@ -614,7 +615,7 @@ InterpreterValue shapeCast(InterpreterState&, vector::ShapeCastOp op,
 InterpreterValue shuffle(InterpreterState& state, vector::ShuffleOp shuffle,
                          const InterpreterValue& v0,
                          const InterpreterValue& v1) {
-  auto result = v0.typedAlike(shuffle.getVectorType().getShape());
+  auto result = v0.typedAlike(shuffle.getResultVectorType().getShape());
   auto& resultView = result.view();
   resultView.isVector = true;
 

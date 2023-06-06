@@ -19,7 +19,9 @@ limitations under the License.
 #include <cstdint>
 #include <numeric>
 #include <optional>
+#include <queue>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "llvm/IR/IntrinsicsNVPTX.h"
@@ -31,6 +33,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/target_util.h"
 #include "tensorflow/compiler/xla/service/hlo_parser.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/llvm_type_conversion_util.h"
+#include "tensorflow/compiler/xla/service/llvm_ir/llvm_util.h"
 #include "tensorflow/compiler/xla/stream_executor/device_description.h"
 #include "tensorflow/compiler/xla/translate/mhlo_to_hlo/type_to_shape.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
@@ -109,7 +112,7 @@ bool IsMatrixMultiplication(const HloInstruction& dot) {
        output_primitive_type == F32 || output_primitive_type == F64 ||
        output_primitive_type == C64 || output_primitive_type == C128) ||
       (output_primitive_type == S32 && lhs_shape.element_type() == S8 &&
-       lhs_shape.element_type() == S8);
+       rhs_shape.element_type() == S8);
   bool shapes_are_valid =
       type_is_allowed &&
       IsRank2(lhs_shape, dim_numbers.lhs_batch_dimensions_size()) &&
@@ -131,92 +134,6 @@ bool IsMatrixMultiplication(const HloInstruction& dot) {
   return true;
 }
 
-// Data types that are tested to work in the Triton-based matmul emitter.
-bool IsTritonSupportedInputType(
-    PrimitiveType t, se::CudaComputeCapability cuda_compute_capability) {
-  switch (t) {
-    case PRED:
-    case S8:
-    case S32:
-    case F16:
-    case F32:
-      return true;
-    case BF16:
-      return cuda_compute_capability.IsAtLeast(
-          stream_executor::CudaComputeCapability::AMPERE);
-    default:
-      return false;
-  }
-}
-
-bool IsTritonFusibleConvert(const HloInstruction* input,
-                            se::CudaComputeCapability cuda_compute_capability) {
-  // TODO(b/266862494): Can pick up almost any
-  // convert, but if it's reducing the data volume it should rather be fused
-  // to the output of the producer kernel. However not all operations support
-  // output fusion - then it should be fused here anyway!
-  return IsTritonSupportedInputType(input->operand(0)->shape().element_type(),
-                                    cuda_compute_capability) &&
-         ShapeUtil::ByteSizeOf(input->operand(0)->shape()) <=
-             ShapeUtil::ByteSizeOf(input->shape());
-}
-
-bool IsTritonHandledGEMM(const HloInstruction& dot,
-                         se::CudaComputeCapability cuda_compute_capability) {
-  if (dot.opcode() != HloOpcode::kDot) {
-    return false;
-  }
-
-  // TODO(b/266860366): Support batch dimensions.
-  if (dot.dot_dimension_numbers().lhs_batch_dimensions_size()) {
-    return false;
-  }
-
-  auto supported_output_type = [&](const PrimitiveType t) {
-    switch (t) {
-      case F16:
-      case F32:
-        return true;
-      case BF16:
-        return cuda_compute_capability.IsAtLeast(
-            stream_executor::CudaComputeCapability::AMPERE);
-      default:
-        return false;
-    }
-  };
-
-  // TODO(b/266862493): Support more output types.
-  if (!supported_output_type(dot.shape().element_type())) {
-    return false;
-  }
-
-  // Traverse HLO graph looking for its part that both can be fused
-  // and is worth fusing.
-  auto is_triton_fusible_input = [&](const HloInstruction* input) {
-    while (true) {
-      if (!IsTritonSupportedInputType(input->shape().element_type(),
-                                      cuda_compute_capability)) {
-        return false;
-      }
-      switch (input->opcode()) {
-        case HloOpcode::kBitcast:
-          input = input->operand(0);
-          continue;
-        case HloOpcode::kConvert:
-          return IsTritonFusibleConvert(input, cuda_compute_capability);
-        default:
-          return false;
-      }
-    }
-  };
-
-  return is_triton_fusible_input(dot.operand(0)) ||
-         is_triton_fusible_input(dot.operand(1));
-
-  // TODO(b/266857789): either check that no output fusion (axpy, relu etc)
-  // is expected or actually support it.
-}
-
 Vector3 GetReductionTiling(const ReductionDimensions& reduction_dimensions) {
   if (reduction_dimensions.is_row_reduction) {
     int64_t tile_z = std::min(reduction_dimensions.dimensions[0],
@@ -226,22 +143,6 @@ Vector3 GetReductionTiling(const ReductionDimensions& reduction_dimensions) {
 
   // Column reduction.
   return {1, 128, 1};
-}
-
-const char* const kSoftmaxCallTarget = "__softmax_fusion";
-
-bool IsSoftmaxCustomCall(const HloInstruction& hlo) {
-  if (hlo.opcode() != HloOpcode::kCustomCall) {
-    return false;
-  }
-  return hlo.custom_call_target() == kSoftmaxCallTarget;
-}
-
-bool IsTritonCustomCall(const HloInstruction& hlo) {
-  if (hlo.opcode() != HloOpcode::kCustomCall) {
-    return false;
-  }
-  return hlo.custom_call_target() == kTritonCallTarget;
 }
 
 const char* const kCusolverCholeskyCallTarget = "__cusolver$cholesky";
@@ -557,7 +458,7 @@ llvm::SmallVector<mlir::Value> GetHloOperands(mlir::Operation* op) {
   if (op->getDialect() == op->getContext()->getLoadedDialect("mhlo")) {
     return op->getOperands();
   }
-  LOG(FATAL) << "Unexpected op: " << MlirToString(op);
+  LOG(FATAL) << "Unexpected op: " << llvm_ir::DumpToString(op);
 }
 
 llvm::SmallVector<mlir::Value> GetHloOutputs(mlir::Operation* op) {
@@ -575,7 +476,7 @@ llvm::SmallVector<mlir::Value> GetHloOutputs(mlir::Operation* op) {
   if (op->getDialect() == op->getContext()->getLoadedDialect("mhlo")) {
     return op->getResults();
   }
-  LOG(FATAL) << "Unexpected op: " << MlirToString(op);
+  LOG(FATAL) << "Unexpected op: " << llvm_ir::DumpToString(op);
 }
 
 bool WritesMlirBuffer(mlir::Operation* op, mlir::Value operand) {
@@ -592,8 +493,13 @@ static int64_t GetMemRefSizeInBytes(mlir::MemRefType type) {
   // For i1 memrefs, the underlying allocation is 8 bits.
   if (type.getElementType().isInteger(/*width=*/1)) {
     return type.getNumElements();
+  } else if (auto complexType =
+                 type.getElementType().dyn_cast<mlir::ComplexType>()) {
+    auto elementType = complexType.getElementType();
+    return elementType.getIntOrFloatBitWidth() * type.getNumElements() * 2 /
+           CHAR_BIT;
   } else {
-    return type.cast<mlir::ShapedType>().getSizeInBits() / CHAR_BIT;
+    return type.getNumElements() * type.getElementTypeBitWidth() / CHAR_BIT;
   }
 }
 
@@ -747,53 +653,99 @@ std::vector<HloInstruction*> GetFusionRoots(HloComputation* computation) {
   return out;
 }
 
-static std::optional<Vector3> FindTiledTranspose(const HloInstruction& instr) {
+std::optional<Vector3> FindTiledTranspose(const HloInstruction& instr,
+                                          Vector3& permutation) {
   if (instr.opcode() != HloOpcode::kCopy) {
     return std::nullopt;
   }
 
-  if (std::optional<Vector3> tr = ShapeUtil::FindTranspose021(
-          instr.operand(0)->shape(), instr.shape())) {
-    if (tr->at(1) >= kMinDimensionToTransposeTiled &&
-        tr->at(2) >= kMinDimensionToTransposeTiled) {
+  if (std::optional<Vector3> tr = ShapeUtil::GetNormalizedTransposeShape(
+          instr.operand(0)->shape(), instr.shape(), Vector3{0, 2, 1})) {
+    if ((tr->at(1) >= kMinDimensionToTransposeTiled &&
+         tr->at(2) >= kMinDimensionToTransposeTiled) ||
+        (tr->at(1) >= kMinDimensionToTransposeTiled2 &&
+         tr->at(2) >= kMinDimensionToTransposeTiled2 &&
+         tr->at(1) * tr->at(2) >= kMinTotalDimensionsToTransposeTiled)) {
+      permutation = Vector3{0, 2, 1};
+      return tr;
+    }
+  }
+  if (std::optional<Vector3> tr = ShapeUtil::GetNormalizedTransposeShape(
+          instr.operand(0)->shape(), instr.shape(), Vector3{2, 1, 0})) {
+    if ((tr->at(0) >= kMinDimensionToTransposeTiled &&
+         tr->at(2) >= kMinDimensionToTransposeTiled) ||
+        (tr->at(0) >= kMinDimensionToTransposeTiled2 &&
+         tr->at(2) >= kMinDimensionToTransposeTiled2 &&
+         tr->at(0) * tr->at(2) >= kMinTotalDimensionsToTransposeTiled)) {
+      permutation = Vector3{2, 1, 0};
       return tr;
     }
   }
   return std::nullopt;
 }
 
-// Find 021 transpose in logical + physical transposition.
-std::optional<Vector3> FindTiledLogicalTranspose(const HloInstruction& instr) {
+// Find 021 or 210 transpose in logical + physical transposition.
+std::optional<Vector3> FindTiledLogicalTranspose(const HloInstruction& instr,
+                                                 Vector3& permutation) {
   if (instr.opcode() != HloOpcode::kTranspose) {
     return std::nullopt;
   }
 
   // TODO(cheshire): avoid code duplication.
-  if (std::optional<Vector3> tr = ShapeUtil::FindLogicalTranspose021(
-          instr.operand(0)->shape(), instr.shape(), instr.dimensions())) {
-    if (tr->at(1) >= kMinDimensionToTransposeTiled &&
-        tr->at(2) >= kMinDimensionToTransposeTiled) {
+  if (std::optional<Vector3> tr = ShapeUtil::GetNormalizedLogicalTransposeShape(
+          instr.operand(0)->shape(), instr.shape(), instr.dimensions(),
+          Vector3{0, 2, 1})) {
+    if ((tr->at(1) >= kMinDimensionToTransposeTiled &&
+         tr->at(2) >= kMinDimensionToTransposeTiled) ||
+        (tr->at(1) >= kMinDimensionToTransposeTiled2 &&
+         tr->at(2) >= kMinDimensionToTransposeTiled2 &&
+         tr->at(1) * tr->at(2) >= kMinTotalDimensionsToTransposeTiled)) {
+      permutation = Vector3{0, 2, 1};
+      return tr;
+    }
+  }
+  if (std::optional<Vector3> tr = ShapeUtil::GetNormalizedLogicalTransposeShape(
+          instr.operand(0)->shape(), instr.shape(), instr.dimensions(),
+          Vector3{2, 1, 0})) {
+    if ((tr->at(0) >= kMinDimensionToTransposeTiled &&
+         tr->at(2) >= kMinDimensionToTransposeTiled) ||
+        (tr->at(0) >= kMinDimensionToTransposeTiled2 &&
+         tr->at(2) >= kMinDimensionToTransposeTiled2 &&
+         tr->at(0) * tr->at(2) >= kMinTotalDimensionsToTransposeTiled)) {
+      permutation = Vector3{2, 1, 0};
       return tr;
     }
   }
   return std::nullopt;
 }
 
-std::optional<Vector3> FindAnyTiledTranspose(const HloInstruction& instr) {
+std::optional<std::pair<Vector3, Vector3>> FindAnyTiledTranspose(
+    const HloInstruction& instr) {
   const HloInstruction& hero = FindNonTrivialHero(instr);
-
-  if (std::optional<Vector3> d1 = FindTiledTranspose(hero)) {
-    return d1;
+  // TODO(b/284431534): Figure out how to make the shared memory transpose
+  // emitter faster for this case.
+  if (hero.shape().element_type() == F32 &&
+      instr.shape().element_type() == S8) {
+    return std::nullopt;
   }
-  if (std::optional<Vector3> d2 = FindTiledLogicalTranspose(hero)) {
-    return d2;
+
+  Vector3 permutation;
+  if (std::optional<Vector3> d1 = FindTiledTranspose(hero, permutation)) {
+    return std::make_pair(d1.value(), permutation);
+  }
+  if (std::optional<Vector3> d2 =
+          FindTiledLogicalTranspose(hero, permutation)) {
+    return std::make_pair(d2.value(), permutation);
   }
   return std::nullopt;
 }
 
-static bool IsIntermediate(const HloInstruction* instr) {
+static bool IsIntermediate(const HloInstruction* instr,
+                           int allowed_operand_count = 1) {
   return (
-      instr->operand_count() == 1 && instr->user_count() <= 1 &&
+      instr->operand_count() > 0 &&
+      instr->operand_count() <= allowed_operand_count &&
+      instr->user_count() <= 1 &&
       ((instr->IsElementwise() && instr->opcode() != HloOpcode::kCopy) ||
        instr->opcode() == HloOpcode::kBitcast ||
        (instr->opcode() == HloOpcode::kReshape &&
@@ -814,7 +766,43 @@ const HloInstruction& FindNonTrivialHero(const HloInstruction& instr) {
   while (IsIntermediate(idx)) {
     idx = idx->operand(0);
   }
-  return *idx;
+  if (!IsIntermediate(idx, /*allowed_operand_count=*/3)) {
+    return *idx;
+  }
+  // Try a bit harder to find a transpose hero. The shared memory transpose
+  // emitter also works if there are ops with more than 1 operand on the path
+  // between root and the transpose op, we still want the restriction though
+  // that each op on the path is elementwise and has only 1 user.
+  absl::flat_hash_set<const HloInstruction*> visited;
+  std::queue<const HloInstruction*> q;
+  auto enqueue_operands = [&](const HloInstruction* idx) {
+    for (HloInstruction* hlo : idx->operands()) {
+      if (visited.insert(hlo).second) {
+        q.push(hlo);
+      }
+    }
+  };
+  enqueue_operands(idx);
+  const HloInstruction* non_trivial_hero = nullptr;
+  while (!q.empty()) {
+    const HloInstruction* hlo = q.front();
+    q.pop();
+    Vector3 permutation;
+    if (FindTiledLogicalTranspose(*hlo, permutation)) {
+      // If we do not find a unique transpose op, use the original non-trivial
+      // hero.
+      if (non_trivial_hero != nullptr) {
+        return *idx;
+      }
+      non_trivial_hero = hlo;
+    } else if (IsIntermediate(hlo, /*allowed_operand_count=*/3)) {
+      enqueue_operands(hlo);
+    }
+  }
+  if (non_trivial_hero == nullptr) {
+    return *idx;
+  }
+  return *non_trivial_hero;
 }
 
 bool HasAnyTiledTransposeRoot(HloComputation* computation) {
@@ -833,11 +821,7 @@ bool HasAnyUnnestedReductionRoot(HloComputation* computation) {
 
 void LogAndVerify(const llvm::Module* m) {
   if (VLOG_IS_ON(5)) {
-    std::string llir_str;
-    llvm::raw_string_ostream llir_stream(llir_str);
-    llir_stream << *m;
-    llir_stream.flush();
-    XLA_VLOG_LINES(5, llir_str);
+    XLA_VLOG_LINES(5, llvm_ir::DumpToString(m));
   }
 
   std::string llir_str;

@@ -37,6 +37,7 @@ cc_library(
         "//tensorflow/core:framework",
         "//tensorflow/core:framework_internal",
         "//tensorflow/core:lib",
+        "//tensorflow/core/data:utils",
         "//tensorflow/core/data/service:common",
         "//tensorflow/core/data/service:common_proto_cc",
         "//tensorflow/core/data/service:dispatcher_client",
@@ -66,7 +67,6 @@ tf_cc_test(
     deps = [
         ":common",
         ":data_service_client",
-        "@com_google_absl//absl/time",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
@@ -78,6 +78,7 @@ tf_cc_test(
         "//tensorflow/core/platform:status",
         "//tensorflow/core/platform:status_matchers",
         "//tensorflow/core/platform:statusor",
+        "@com_google_absl//absl/time",
     ] + tf_grpc_cc_dependencies() + tf_protos_profiler_service(),
 )
 

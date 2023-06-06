@@ -27,7 +27,6 @@ limitations under the License.
 #include <set>
 
 #include "absl/types/optional.h"
-#include "tensorflow/compiler/jit/xla_device_context.h"
 #include "tensorflow/compiler/jit/xla_tensor.h"
 #include "tensorflow/compiler/tf2xla/layout_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
@@ -45,6 +44,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/stream_executor_no_cuda.h"
+#include "tensorflow/core/tfrt/common/async_value_tensor.h"
 
 namespace tensorflow {
 
@@ -225,6 +225,8 @@ class XlaDevice : public LocalDevice {
   const Metadata xla_metadata_;
   // Which hardware device in the client's platform this XlaDevice controls.
   const int device_ordinal_;
+  // The name/type of this XlaDevice. eg. "XLA_GPU".
+  const DeviceType device_name_;
   // The name of the device that is used to compile Ops for this XlaDevice.
   const DeviceType jit_device_name_;
   // The platform for this device.
@@ -233,6 +235,7 @@ class XlaDevice : public LocalDevice {
   const int intra_op_parallelism_threads_;
   // Memory allocator associated with this device.
   Allocator* xla_allocator_ TF_GUARDED_BY(mu_) = nullptr;  // Not owned.
+  std::unique_ptr<AsyncValueAllocator> pjrt_allocator_ TF_GUARDED_BY(mu_);
 
   // Stream associated with this device. Operations enqueued on this
   // stream are executed on the device. Operations include data

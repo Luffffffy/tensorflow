@@ -126,6 +126,7 @@ Status IteratorResource::GetNext(OpKernelContext* ctx,
   params.thread_factory = unbounded_thread_pool_.get_thread_factory();
   params.thread_pool = &unbounded_thread_pool_;
   params.id_registry = captured_state->id_registry();
+  params.warm_start = dataset->options().optimization_options().warm_start();
   std::function<void()> deregister_fn;
   TF_RETURN_IF_ERROR(RegisterCancellationCallback(
       ctx->cancellation_manager(),
@@ -248,6 +249,7 @@ Status IteratorResource::SetIteratorFromDataset(OpKernelContext* ctx,
   params.thread_factory = unbounded_thread_pool_.get_thread_factory();
   params.thread_pool = &unbounded_thread_pool_;
   params.id_registry = new_state->id_registry();
+  params.warm_start = dataset->options().optimization_options().warm_start();
   std::function<void()> deregister_fn;
   TF_RETURN_IF_ERROR(RegisterCancellationCallback(
       ctx->cancellation_manager(),
@@ -1072,7 +1074,7 @@ void DeserializeIteratorOp::Compute(OpKernelContext* ctx) {
         errors::CreateWithUpdatedMessage(
             s, absl::StrCat(
                    "Failed to restore dataset iterator from checkpoint: ",
-                   s.error_message(),
+                   s.message(),
                    ". Make sure the dataset definition has not changed between "
                    "the process that saved the checkpoint and the process that "
                    "is restoring it.")));

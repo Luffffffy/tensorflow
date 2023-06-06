@@ -130,6 +130,10 @@ class StreamInterface {
   // or a nullptr.
   virtual void** GpuStreamMemberHack() { return nullptr; }
 
+  virtual void SetPriority(int priority) {
+    LOG(ERROR) << "SetPriority unimplemented for this stream.";
+  }
+
  private:
   SE_DISALLOW_COPY_AND_ASSIGN(StreamInterface);
 };
@@ -269,7 +273,7 @@ class StreamExecutorInterface {
   virtual bool StopTimer(Stream* stream, Timer* timer) = 0;
   virtual tsl::Status BlockHostUntilDone(Stream* stream) = 0;
   virtual tsl::Status GetStatus(Stream* stream) {
-    return tsl::Status(tsl::error::UNIMPLEMENTED,
+    return tsl::Status(absl::StatusCode::kUnimplemented,
                        "GetStatus is not supported on this executor.");
   }
   virtual int PlatformDeviceCount() = 0;

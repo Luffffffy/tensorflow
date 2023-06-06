@@ -33,6 +33,7 @@ package(
         # TODO(pedaveeraiah): to be removed when summary.proto.h deps moves to TSL
         "//tensorflow/tsl/lib:__subpackages__",
         # copybara:uncomment "//learning/brain/tfrt/aot:__subpackages__",
+        # copybara:uncomment "//platforms/xla/megascale/tensorflow:__subpackages__",
     ],
     licenses = ["notice"],
 )
@@ -55,6 +56,7 @@ exports_files(
         "graph_to_functiondef.h",
         "kernel_def_builder.h",
         "kernel_def_util.h",
+        "local_rendezvous.h",
         "logging.h",
         "lookup_interface.h",
         "memory_types.h",
@@ -120,6 +122,7 @@ exports_files(
         "full_type.proto",
         "function.proto",
         "graph.proto",
+        "graph_debug_info.proto",
         "graph_transfer_info.proto",
         "kernel_def.proto",
         "log_memory.proto",
@@ -481,9 +484,9 @@ cc_library(
     deps = [
         ":numeric_types",
         ":type_traits",
+        "//tensorflow/tsl/framework:allocator",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
-        "//tensorflow/tsl/framework:allocator",
     ] + if_static(
         extra_deps = [
             ":allocator_registry_impl",
@@ -545,6 +548,7 @@ cc_library(
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
+        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -916,6 +920,7 @@ cc_library(
         "//tensorflow/core/lib/strings:str_util",
         "//tensorflow/core/platform:fingerprint",
         "//tensorflow/core/platform:protobuf",
+        "//tensorflow/core/util:overflow",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -1029,11 +1034,10 @@ cc_library(
         "full_type_util.h",
     ],
     visibility = [
-        "//tensorflow/core:__subpackages__",
-        "//tensorflow/security/fuzzing:__subpackages__",
         # Necessary for calling REGISTER_OP with SetTypeConstructor
         # http://yaqs/4779722181477138432
         "//intelligence/brella/analytics/sql/tensorflow:__pkg__",
+        "//tensorflow:__subpackages__",
     ],
     deps = [
         ":attr_value_proto_cc",
@@ -1060,6 +1064,7 @@ cc_library(
     deps = [
         ":full_type_proto_cc",
         ":full_type_util",
+        ":loose_headers",
         ":op_def_builder",
         ":op_def_util",
         "//tensorflow/core:core_stringpiece",
@@ -1253,6 +1258,7 @@ cc_library(
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
         "//tensorflow/core/common_runtime:direct_session_internal",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -1344,8 +1350,11 @@ tf_cc_tests(
         "//tensorflow/core/util:protos_test_cc",
         "//third_party/eigen3",
         "@com_google_absl//absl/base",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
     ],
 )
 
@@ -1498,6 +1507,7 @@ tf_proto_library(
     protodeps = [
         ":attr_value_proto",
         ":function_proto",
+        ":graph_debug_info_proto",
         ":node_def_proto",
         ":op_def_proto",
         ":resource_handle_proto",
@@ -1520,6 +1530,15 @@ tf_proto_library(
         ":tensor_proto",
         ":tensor_shape_proto",
         ":types_proto",
+    ],
+)
+
+tf_proto_library(
+    name = "graph_debug_info_proto",
+    srcs = ["graph_debug_info.proto"],
+    cc_api_version = 2,
+    make_default_target_header_only = True,
+    protodeps = [
     ],
 )
 
@@ -1819,6 +1838,7 @@ tf_proto_library(
         ":device_attributes_proto",
         ":full_type_proto",
         ":function_proto",
+        ":graph_debug_info_proto",
         ":graph_proto",
         ":graph_transfer_info_proto",
         ":kernel_def_proto",
@@ -1847,8 +1867,24 @@ tf_proto_library(
 tf_cc_fuzz_test(
     name = "tensor_shape_fuzz",
     srcs = ["tensor_shape_fuzz.cc"],
+    tags = ["no_oss"],
     deps = [
         "//tensorflow/core:framework",
+        "//tensorflow/security/fuzzing/cc/core/framework:tensor_shape_domains",
+        "//tensorflow/tsl/lib/core:status_test_util",
+    ],
+)
+
+tf_cc_fuzz_test(
+    name = "tensor_fuzz",
+    srcs = ["tensor_fuzz.cc"],
+    tags = ["no_oss"],
+    deps = [
+        ":tensor_testutil",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/security/fuzzing/cc/core/framework:datatype_domains",
+        "//tensorflow/security/fuzzing/cc/core/framework:tensor_domains",
         "//tensorflow/security/fuzzing/cc/core/framework:tensor_shape_domains",
         "//tensorflow/tsl/lib/core:status_test_util",
     ],

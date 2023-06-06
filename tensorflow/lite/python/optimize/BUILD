@@ -39,8 +39,8 @@ pybind_extension(
     link_in_framework = True,
     deps = [
         ":calibration_wrapper_lib",
-        "//tensorflow/lite:framework_lib",
-        "//tensorflow/lite/core:headers",
+        "//tensorflow/lite:framework",
+        "//tensorflow/lite/core:framework_stable",
         "//tensorflow/python:pybind11_lib",
         "//third_party/python_runtime:headers",
         "@pybind11",
@@ -59,7 +59,7 @@ py_library(
         "//tensorflow/lite/python:convert_phase",
         "//tensorflow/lite/python:interpreter",
         "//tensorflow/python:dtypes",
-        "//tensorflow/python:util",
+        "//tensorflow/python/util:lazy_loader",
         "//third_party/py/numpy",
     ],
 )
@@ -79,7 +79,7 @@ py_test(
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:dtypes",
         "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python:platform",
+        "//tensorflow/python/platform:resource_loader",
         "//third_party/py/numpy",
         "@absl_py//absl/testing:parameterized",
     ],

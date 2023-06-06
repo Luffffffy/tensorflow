@@ -18,6 +18,7 @@ limitations under the License.
 #include <tuple>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/time/time.h"
 #include "tensorflow/core/data/service/dispatcher_client.h"
 #include "tensorflow/core/data/service/snapshot/path_utils.h"
@@ -76,7 +77,7 @@ class TestSnapshotCluster {
 tsl::Status WaitForFileExists(const std::string& file_path) {
   while (true) {
     tsl::Status status = Env::Default()->FileExists(file_path);
-    if (!errors::IsNotFound(status)) {
+    if (!absl::IsNotFound(status)) {
       TF_RETURN_IF_ERROR(status);
     }
     if (status.ok()) {
@@ -213,8 +214,6 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::Values(tsl::io::compression::kGzip,
                                          tsl::io::compression::kSnappy,
                                          tsl::io::compression::kZlib)));
-
-// TODO(b/258691097): Add tests for multiple sources (e.g., zip, enumerate).
 
 }  // namespace
 }  // namespace data

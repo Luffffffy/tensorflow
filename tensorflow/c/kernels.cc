@@ -36,6 +36,9 @@ limitations under the License.
 #if !defined(IS_MOBILE_PLATFORM) && !defined(IS_SLIM_BUILD)
 #include "tensorflow/c/experimental/stream_executor/stream_executor_internal.h"
 #include "tensorflow/compiler/xla/stream_executor/stream.h"
+#include "tensorflow/core/framework/device.h"
+#include "tensorflow/tsl/framework/device_id_utils.h"
+#include "tensorflow/tsl/platform/statusor.h"
 #endif  // !defined(IS_MOBILE_PLATFORM) && !defined(IS_SLIM_BUILD)
 
 using tensorflow::errors::InvalidArgument;
@@ -43,11 +46,18 @@ using tensorflow::errors::InvalidArgument;
 // implementations. It is crucial that changes to this file are made cautiously
 // and with a focus on maintaining both source and binary compatibility.
 
+typedef std::function<void()> AsyncOpKernelDoneCallback;
+void TF_RunAsyncOpKernelDoneCallback(TF_AsyncOpKernelDoneCallback* done) {
+  (*reinterpret_cast<AsyncOpKernelDoneCallback*>(done))();
+}
+
 struct TF_KernelBuilder {
   ::tensorflow::KernelDefBuilder* cc_builder;
 
   void* (*create_function)(TF_OpKernelConstruction*);
   void (*compute_function)(void*, TF_OpKernelContext*);
+  void (*compute_async_function)(void*, TF_OpKernelContext*,
+                                 TF_AsyncOpKernelDoneCallback* done);
   void (*delete_function)(void*);
 };
 
@@ -61,6 +71,23 @@ TF_KernelBuilder* TF_NewKernelBuilder(
   result->cc_builder->Device(device_name);
   result->create_function = create_func;
   result->compute_function = compute_func;
+  result->compute_async_function = nullptr;
+  result->delete_function = delete_func;
+  return result;
+}
+
+TF_KernelBuilder* TF_NewAsyncKernelBuilder(
+    const char* op_name, const char* device_name,
+    void* (*create_func)(TF_OpKernelConstruction*),
+    void (*compute_async_func)(void*, TF_OpKernelContext*,
+                               TF_AsyncOpKernelDoneCallback* done),
+    void (*delete_func)(void*)) {
+  TF_KernelBuilder* result = new TF_KernelBuilder;
+  result->cc_builder = new ::tensorflow::KernelDefBuilder(op_name);
+  result->cc_builder->Device(device_name);
+  result->create_function = create_func;
+  result->compute_function = nullptr;
+  result->compute_async_function = compute_async_func;
   result->delete_function = delete_func;
   return result;
 }
@@ -174,6 +201,51 @@ class COpKernel : public OpKernel {
   void* c_kernel_;
 };
 
+class CAsyncOpKernel : public AsyncOpKernel {
+ public:
+  explicit CAsyncOpKernel(
+      OpKernelConstruction* ctx, void* (*create_func)(TF_OpKernelConstruction*),
+      void (*compute_async_func)(void*, TF_OpKernelContext*,
+                                 TF_AsyncOpKernelDoneCallback*),
+      void (*delete_func)(void*))
+      : AsyncOpKernel(ctx),
+        compute_async_func_(compute_async_func),
+        delete_func_(delete_func) {
+    if (create_func != nullptr) {
+      c_kernel_ =
+          (*create_func)(reinterpret_cast<TF_OpKernelConstruction*>(ctx));
+    } else {
+      c_kernel_ = nullptr;
+    }
+  }
+
+  void Compute(OpKernelContext* ctx) override {
+    Notification n;
+    ComputeAsync(ctx, [&n]() { n.Notify(); });
+    n.WaitForNotification();
+  }
+
+  void ComputeAsync(OpKernelContext* ctx, AsyncOpKernelDoneCallback done) {
+    (*compute_async_func_)(
+        c_kernel_, reinterpret_cast<TF_OpKernelContext*>(ctx),
+        reinterpret_cast<TF_AsyncOpKernelDoneCallback*>(&done));
+  }
+
+  CAsyncOpKernel* AsAsync() override { return this; }
+
+  ~CAsyncOpKernel() override {
+    if (delete_func_ != nullptr) {
+      (*delete_func_)(c_kernel_);
+    }
+  }
+
+ private:
+  void (*compute_async_func_)(void*, TF_OpKernelContext* context,
+                              TF_AsyncOpKernelDoneCallback* done);
+  void (*delete_func_)(void*);
+  void* c_kernel_;
+};
+
 // A KernelFactory that returns COpKernel instances.
 class KernelBuilderFactory
     : public ::tensorflow::kernel_factory::OpKernelFactory {
@@ -182,9 +254,14 @@ class KernelBuilderFactory
       : builder_(builder) {}
   ::tensorflow::OpKernel* Create(
       ::tensorflow::OpKernelConstruction* context) override {
-    return new ::tensorflow::COpKernel(context, builder_->create_function,
-                                       builder_->compute_function,
-                                       builder_->delete_function);
+    if (builder_->compute_function)
+      return new ::tensorflow::COpKernel(context, builder_->create_function,
+                                         builder_->compute_function,
+                                         builder_->delete_function);
+    else
+      return new ::tensorflow::CAsyncOpKernel(
+          context, builder_->create_function, builder_->compute_async_function,
+          builder_->delete_function);
   }
   ~KernelBuilderFactory() override { TF_DeleteKernelBuilder(builder_); }
 
@@ -586,12 +663,12 @@ TF_Buffer* TF_OpKernelConstruction_GetAttrFunction(TF_OpKernelConstruction* ctx,
   tensorflow::NameAttrList function;
   auto cc_status = cc_ctx->GetAttr(attr_name, &function);
   if (!cc_status.ok()) {
-    Set_TF_Status_from_Status(status, cc_status);
+    tsl::Set_TF_Status_from_Status(status, cc_status);
     return nullptr;
   }
   TF_Buffer* buffer = TF_NewBuffer();
   cc_status = tensorflow::MessageToBuffer(function, buffer);
-  Set_TF_Status_from_Status(status, cc_status);
+  tsl::Set_TF_Status_from_Status(status, cc_status);
   if (!cc_status.ok())
     return nullptr;
   else
@@ -679,10 +756,19 @@ int64_t TF_GetStepId(TF_OpKernelContext* ctx) {
 
 int TF_GetDeviceId(TF_OpKernelContext* ctx) {
   // TensorFlow always sets device in OpKernelContext.
-  auto* device =
-      reinterpret_cast<::tensorflow::OpKernelContext*>(ctx)->device();
-  if (!device->parsed_name().has_id) return -1;
-  return device->parsed_name().id;
+  const tensorflow::DeviceBase* device_base =
+      reinterpret_cast<tensorflow::OpKernelContext*>(ctx)->device();
+#if defined(IS_MOBILE_PLATFORM) || defined(IS_SLIM_BUILD)
+  if (!device_base->parsed_name().has_id) return -1;
+  return device_base->parsed_name().id;
+#else
+  const auto* device = reinterpret_cast<const tensorflow::Device*>(
+      device_base->UnderlyingDevice());
+  const tsl::StatusOr<int> id = tsl::GetDeviceIdFromDeviceParsedName(
+      device->parsed_name(), tensorflow::DeviceType(device->device_type()));
+  if (!id.ok()) return -1;
+  return *id;
+#endif  // defined(IS_MOBILE_PLATFORM) || defined(IS_SLIM_BUILD)
 }
 
 TF_StringView TF_GetOpKernelName(TF_OpKernelContext* ctx) {
@@ -717,8 +803,6 @@ TF_Tensor* TF_AllocateOutput(TF_OpKernelContext* context, int index,
                              int num_dims, size_t len, TF_Status* status) {
   TF_SetStatus(status, TF_OK, "");
   auto* cc_ctx = reinterpret_cast<::tensorflow::OpKernelContext*>(context);
-  static_assert(sizeof(int64_t) == sizeof(int64_t),
-                "64-bit int types should match in size");
   tensorflow::gtl::ArraySlice<const int64_t> dimarray(
       reinterpret_cast<const int64_t*>(dims), num_dims);
   tensorflow::Tensor* tensor;
@@ -744,8 +828,6 @@ TF_Tensor* TF_ForwardInputOrAllocateOutput(
   TF_SetStatus(status, TF_OK, "");
   auto* cc_ctx = reinterpret_cast<::tensorflow::OpKernelContext*>(context);
 
-  static_assert(sizeof(int64_t) == sizeof(int64_t),
-                "64-bit int types should match in size");
   tensorflow::gtl::ArraySlice<int> input_indices_array(
       candidate_input_indices, num_candidate_input_indices);
   tensorflow::gtl::ArraySlice<const int64_t> output_dimarray(
@@ -773,8 +855,6 @@ TF_Tensor* TF_AllocateTemp(TF_OpKernelContext* context, TF_DataType dtype,
                            TF_Status* status) {
   auto* cc_ctx = reinterpret_cast<::tensorflow::OpKernelContext*>(context);
   TF_SetStatus(status, TF_OK, "");
-  static_assert(sizeof(int64_t) == sizeof(int64_t),
-                "64-bit int types should match in size");
   tensorflow::gtl::ArraySlice<const int64_t> dimarray(
       reinterpret_cast<const int64_t*>(dims), num_dims);
   if (attributes && !attributes->struct_size) {

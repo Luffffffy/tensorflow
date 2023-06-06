@@ -34,7 +34,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/mlir/framework/transforms/passes.h"
 
 namespace mlir {
-namespace mhlo {
+namespace xla_framework {
 namespace {
 
 // Given a FuncOp with only memref args/outputs, create a new function that
@@ -77,6 +77,7 @@ struct OutlineXLAFunc : public RewritePattern {
 
     // Functions should only be outlined once and should only use memrefs
     if (!func) return failure();
+    if (func.getSymName() != "main") return failure();
     if (llvm::any_of(op->getOperandTypes(),
                      [](Type t) { return !t.isa<MemRefType>(); }) ||
         op->getNumResults() != 0)
@@ -174,5 +175,5 @@ std::unique_ptr<OperationPass<ModuleOp> > CreateOutlineWithXLAFrameworkPass() {
   return std::make_unique<OutlineWithXLAFrameworkPass>();
 }
 
-}  // namespace mhlo
+}  // namespace xla_framework
 }  // namespace mlir

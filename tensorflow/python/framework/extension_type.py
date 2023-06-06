@@ -30,6 +30,7 @@ from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import type_spec
 from tensorflow.python.framework import type_spec_registry
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import composite_tensor_ops
 from tensorflow.python.ops import gen_math_ops
 from tensorflow.python.ops import math_ops
@@ -109,22 +110,24 @@ class ExtensionType(
   contains type annotations for all instance variables.  The following type
   annotations are supported:
 
-  Type                 | Example
-  -------------------- | --------------------------------------------
-  Python integers      | `i: int`
-  Python floats        | `f: float`
-  Python strings       | `s: str`
-  Python booleans      | `b: bool`
-  Python None          | `n: None`
-  Tensors              | `t: tf.Tensor`
-  Composite Tensors    | `rt: tf.RaggedTensor`
-  Extension Types      | `m: MyMaskedTensor`
-  Tensor shapes        | `shape: tf.TensorShape`
-  Tensor dtypes        | `dtype: tf.DType`
-  Type unions          | `length: typing.Union[int, float]`
-  Tuples               | `params: typing.Tuple[int, float, int, int]`
-  Tuples w/ Ellipsis   | `lengths: typing.Tuple[int, ...]`
-  Mappings             | `tags: typing.Mapping[str, str]`
+  Type                      | Example
+  ------------------------- | --------------------------------------------
+  Python integers           | `i: int`
+  Python floats             | `f: float`
+  Python strings            | `s: str`
+  Python booleans           | `b: bool`
+  Python None               | `n: None`
+  Python tuple              | `params: tuple[int, float, int, int]`
+  Python tuple w/ Ellipsis  | `lengths: tuple[int, ...]`
+  Tensors                   | `t: tf.Tensor`
+  Composite Tensors         | `rt: tf.RaggedTensor`
+  Extension Types           | `m: MyMaskedTensor`
+  Tensor shapes             | `shape: tf.TensorShape`
+  Tensor dtypes             | `dtype: tf.DType`
+  Type unions               | `length: typing.Union[int, float]`
+  Tuples                    | `params: typing.Tuple[int, float, int, int]`
+  Tuples w/ Ellipsis        | `lengths: typing.Tuple[int, ...]`
+  Mappings                  | `tags: typing.Mapping[str, str]`
 
   Fields annotated with `typing.Mapping` will be stored using an immutable
   mapping type.
@@ -278,7 +281,7 @@ class ExtensionType(
       conditions.append(
           math_ops.reduce_all(
               gen_math_ops.equal(t1, t2, incompatible_shape_error=False)))
-    return math_ops.reduce_all(array_ops.stack(conditions))
+    return math_ops.reduce_all(array_ops_stack.stack(conditions))
 
   def __ne__(self, other):
     eq = self.__eq__(other)
@@ -386,6 +389,7 @@ def is_packed(value):
 # ==============================================================================
 
 
+@tf_export('experimental.ExtensionTypeSpec')
 class ExtensionTypeSpec(type_spec.TypeSpec):
   """Base class for tf.ExtensionType TypeSpec."""
 
@@ -475,9 +479,11 @@ class ExtensionTypeSpec(type_spec.TypeSpec):
     return _create_object_from_type_and_dict(cls, spec_fields)
 
   def __setattr__(self, name, value):
-    if (hasattr(self, _IN_CONSTRUCTOR) and
-        self._tf_extension_type_has_field(name)):
+    if (hasattr(self, _IN_CONSTRUCTOR)
+        and self._tf_extension_type_has_field(name)):
       self.__dict__[name] = value
+    elif name in type_spec.CACHED_FIXED_PROPERTIES:
+      super().__setattr__(name, value)
     else:
       raise AttributeError(
           f'Cannot mutate attribute `{name}` '
@@ -1116,8 +1122,13 @@ class AnonymousExtensionTypeSpec(ExtensionTypeSpec):
         if not extension_type_field.ExtensionTypeField.is_reserved_name(name))
 
   def __setattr__(self, name, value):
-    raise AttributeError(f'Cannot set attribute `{name}`. '
-                         f'AnonymousExtensionTypeSpec instances are immutable.')
+    if name in type_spec.CACHED_FIXED_PROPERTIES:
+      super().__setattr__(name, value)
+    else:
+      raise AttributeError(
+          f'Cannot set attribute `{name}`. '
+          'AnonymousExtensionTypeSpec instances are immutable.'
+      )
 
   def __delattr__(self, name):
     raise AttributeError(f'Cannot delete attribute `{name}`. '
